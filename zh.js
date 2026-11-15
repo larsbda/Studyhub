@@ -433,7 +433,7 @@ function zhRateDo(c, l) {
     s.ids.splice(s.i, 1);
     const r = zhRec(c);
     if (zhLearned(c)) { s.learnedN++; toast(`Learned: ${c.s}`); }
-    else if (r && r.cap) { s.capN++; toast(`${c.s}: right today - one more right answer tomorrow makes it learned`); }
+    else if (r && r.cap) s.capN++;          // right today; learned after one more right answer on another day (no pop-up)
     else s.ids.splice(Math.min(s.ids.length, s.i + 4), 0, c.id);
     s.flipped = false; return;
   }
