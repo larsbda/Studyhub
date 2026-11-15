@@ -432,7 +432,7 @@ function zhRateDo(c, l) {
     if (l >= 2) s.good++; else { s.again++; if (!s.missed.includes(c.id)) s.missed.push(c.id); }
     s.ids.splice(s.i, 1);
     const r = zhRec(c);
-    if (zhLearned(c)) { s.learnedN++; toast(`Learned: ${c.s}`); }
+    if (zhLearned(c)) s.learnedN++;         // counted in the bar at the top (no pop-up)
     else if (r && r.cap) s.capN++;          // right today; learned after one more right answer on another day (no pop-up)
     else s.ids.splice(Math.min(s.ids.length, s.i + 4), 0, c.id);
     s.flipped = false; return;
