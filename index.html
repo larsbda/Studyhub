@@ -114,6 +114,7 @@ html.dark .tex-pdf .pdfjs{background:#1b1d22}
 .icon-btn{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:8px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;line-height:1}
 .icon-btn:hover{background:var(--surface2)}
 .menu-btn{display:none}.nav-scrim{display:none}
+#ls-full{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:80;background:var(--bad);color:#fff;border-radius:12px;padding:12px 14px;font-size:.9rem;box-shadow:var(--shadow)}#ls-full .btn{margin-left:8px}
 .gh-status{margin:18px 12px 8px;line-height:1.4}
 /* flashcards on the phone: tap anywhere for the answer, the buttons in a bar at the bottom (like Anki) */
 .cards-play.front,.zh-play.front{cursor:pointer}
@@ -1452,8 +1453,16 @@ const LS_PROGRESS = 'studyhub.progress.v1', LS_USER = 'studyhub.user.v1';
 const mem = {};
 const ls = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return k in mem ? mem[k] : d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { mem[k] = v; } }
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { mem[k] = v; lsFull(); } }
 };
+// This browser refused to save (storage full or blocked): progress then lives only in memory, so say so once.
+function lsFull() {
+  if (document.getElementById('ls-full')) return;
+  const d = document.createElement('div'); d.id = 'ls-full'; d.setAttribute('role', 'alert');
+  d.innerHTML = '<b>This device could not save your progress</b> (its storage is full or blocked). What you do now is kept only while the app is open'
+    + (window.STUDYHUB_GHSYNC ? ', and in the GitHub sync' : '') + '. Free space in the browser settings, or delete old reading texts. <button class="btn sm" onclick="this.parentNode.remove()">OK</button>';
+  (document.body || document.documentElement).appendChild(d);
+}
 let P = Object.assign({ cards: {}, qs: {}, days: {}, theme: '', steps: {}, last: null, mid: {} }, ls.get(LS_PROGRESS, {}));
 let U = Object.assign({ courses: [], lectures: [], fixes: {} }, ls.get(LS_USER, {}));
 const saveP = () => { ls.set(LS_PROGRESS, P); syncSoon(); ghSoon(); };
@@ -1494,7 +1503,8 @@ const saveU = () => { ls.set(LS_USER, U); syncSoon(); };
 var SYNC = { on: false, tried: false, busy: false, again: false, timer: null, at: 0 };
 const LOCAL_ONLY = ['theme', 'last'];   // per-device preferences, never synced
 function syncSoon() { if (SYNC.tried && !SYNC.on) return; clearTimeout(SYNC.timer); SYNC.timer = setTimeout(syncNow, 1500); }
-function newerItem(x, y, alt) { const tx = x.t || 0, ty = y.t || 0; return tx !== ty ? tx > ty : alt(x) >= alt(y); }
+// u = when a rating was undone: the restored record must beat the undone rating in every later merge
+function newerItem(x, y, alt) { const tx = Math.max(x.t || 0, x.u || 0), ty = Math.max(y.t || 0, y.u || 0); return tx !== ty ? tx > ty : alt(x) >= alt(y); }
 function mergeItems(a = {}, b = {}, alt) { const m = Object.assign({}, b); for (const k in a) m[k] = k in b && !newerItem(a[k], b[k], alt) ? b[k] : a[k]; return m; }
 function sharedP(x) { const o = Object.assign({}, x); LOCAL_ONLY.forEach(k => delete o[k]); return o; }
 function mergeP(a, b) {
@@ -4013,7 +4023,16 @@ function cardsOf(id) {
 function rateHtml() {
   return session.flipped
     ? `<div class="rate">${[['0', "Don't know", 'bad'], ['1', 'Barely know', 'warnbtn'], ['2', 'Almost there', 'primary'], ['3', 'Know it', 'good']].map(([l, t, c]) => `<button class="btn ${c}" data-action="rate" data-level="${l}">${t} <span class="kbd" style="background:transparent;color:inherit">${+l + 1}</span></button>`).join('')}</div>`
-    : `<div class="rate"><button class="btn primary" data-action="flip">Show answer</button><button class="btn ghost" data-action="skip">Skip →</button></div>`;
+    : `<div class="rate">${session.undo ? '<button class="btn ghost" data-action="undo-rate" title="Undo the last rating (U)">↶ Undo</button>' : ''}<button class="btn primary" data-action="flip">Show answer</button><button class="btn ghost" data-action="skip">Skip →</button></div>`;
+}
+// Undo the last rating: the card's record, today's count and the place in the session go back to before it
+function undoRate() {
+  const u = session && session.undo; if (!u) return;
+  P.cards[u.id] = Object.assign(u.rec || { b: 0, due: 0, n: 0 }, { u: Date.now() });
+  if (u.day == null) delete P.days[today()]; else P.days[today()] = u.day;
+  Object.assign(session, { i: u.i, good: u.good, again: u.again, flipped: true, undo: null });
+  session.queue.length = u.qlen; if (!u.req) session.requeued.delete(u.id);
+  saveP(); renderCards(); toast('Last rating undone');
 }
 function flipCard() {
   session.flipped = !session.flipped;
@@ -4030,12 +4049,13 @@ function renderCards() {
   const card = s.queue[s.i];
   if (!card) {
     if (!s.stepsMarked && s.good + s.again) { s.stepsMarked = true; markStep(s.queue.map(c => c.lec), 'recall'); }
+    if (!s.ghSynced) { s.ghSynced = true; ghSync(); }        // send the finished set right away (phone app closes soon after)
     if (isPlanExercise(s)) { moveToNextPlanStep(); return; }
     const tot = s.good + s.again;
     main.innerHTML = `<div class="q-card card" style="text-align:center"><div style="font-size:3rem"></div><h2>Session complete</h2>
       <p class="muted">${tot} ratings · ${s.good} solid (almost there / know it) · ${s.again} to revisit</p>
       ${(() => { const left = s.src ? dueCards(cardsOf(s.src)).length : 0; return left ? `<p class="small muted">${left} more card${left === 1 ? '' : 's'} due or new here.</p>` : ''; })()}
-      <div class="row" style="justify-content:center">${planContinueButton(s)}<a class="btn ${isPlanExercise(s) ? '' : 'primary'}" href="${esc(s.back)}">Back</a>${s.src && dueCards(cardsOf(s.src)).length ? `<button class="btn" data-action="cards-more">Review ${batchLabel(dueCards(cardsOf(s.src)).length).replace(/ of .*/, '')} more</button>` : ''}${s.again && !isPlanExercise(s) ? '<button class="btn" data-action="cards-weak-now">Practise the missed ones</button>' : ''}</div>
+      <div class="row" style="justify-content:center">${s.undo ? '<button class="btn ghost" data-action="undo-rate">↶ Undo last rating</button>' : ''}${planContinueButton(s)}<a class="btn ${isPlanExercise(s) ? '' : 'primary'}" href="${esc(s.back)}">Back</a>${s.src && dueCards(cardsOf(s.src)).length ? `<button class="btn" data-action="cards-more">Review ${batchLabel(dueCards(cardsOf(s.src)).length).replace(/ of .*/, '')} more</button>` : ''}${s.again && !isPlanExercise(s) ? '<button class="btn" data-action="cards-weak-now">Practise the missed ones</button>' : ''}</div>
       <div style="margin-top:12px">${batchPick()}</div></div>`;
     return;
   }
@@ -4484,8 +4504,11 @@ function handleClick(ev) {
       startQuiz(shuffle(pool.slice().sort((a, b) => score(a) - score(b)).slice(0, 25)), 'Midterm drill - ' + C.name, location.hash); break; }
     case 'flip': if (Date.now() - tapFlipAt > 700) flipCard(); break;   // already flipped by the tap itself
     case 'skip': session.i++; session.flipped = false; renderCards(); break;
+    case 'undo-rate': undoRate(); break;
     case 'rate': {
       const card = session.queue[session.i], level = +d.level;
+      session.undo = { id: card.id, rec: P.cards[card.id] ? JSON.parse(JSON.stringify(P.cards[card.id])) : null, day: P.days[today()] ?? null,
+        i: session.i, good: session.good, again: session.again, qlen: session.queue.length, req: session.requeued.has(card.id) };
       rateCard(card, level);
       if (level >= 2) session.good++; else { session.again++; if (!session.requeued.has(card.id)) { session.requeued.add(card.id); session.queue.push(card); } }
       session.i++; session.flipped = false; renderCards(); break; }
@@ -4651,6 +4674,7 @@ document.addEventListener('keydown', ev => {
     const card = session.queue[session.i]; if (!card) return;
     if (ev.key === ' ' || ev.key === 'Enter') { ev.preventDefault(); flipCard(); }
     else if (session.flipped && (['1', '2', '3', '4'].includes(ev.key))) { const b = $(`[data-action="rate"][data-level="${+ev.key - 1}"]`); if (b) b.click(); }
+    else if (ev.key.toLowerCase() === 'u' && session.undo) undoRate();
     else if (ev.key === 'ArrowRight') { session.i = Math.min(session.queue.length, session.i + 1); session.flipped = false; renderCards(); }
     else if (ev.key === 'ArrowLeft') { session.i = Math.max(0, session.i - 1); session.flipped = false; renderCards(); }
   } else if (!session.done) {
