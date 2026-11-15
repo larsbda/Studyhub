@@ -486,7 +486,15 @@ function zhSheet(html, anchor) {
     if (b > lim) window.scrollBy({ top: b - lim, behavior: 'smooth' });
   }
 }
-function zhSheetClose() { const el = document.getElementById('zh-sheet'); if (el) el.hidden = true; document.body.classList.remove('zh-sheet-open'); }
+function zhSheetClose() { const el = document.getElementById('zh-sheet'); if (el) el.hidden = true; document.body.classList.remove('zh-sheet-open'); zhSheetMark(null); }
+// which word or character the open sheet belongs to, so a second tap on that same one closes it (PC and phone);
+// the tapped word stays outlined while its sheet is open
+function zhSheetMark(key, el) {
+  $$('.zh-on').forEach(x => x.classList.remove('zh-on'));
+  ZH.sheetKey = key; ZH.sheetEl = el || null;
+  if (el && el.classList) el.classList.add('zh-on');
+}
+function zhSheetIs(key, el) { const sh = document.getElementById('zh-sheet'); return !!(sh && !sh.hidden && ZH.sheetKey === key && ZH.sheetEl === el); }
 function zhCharSheet(ch, anchor, word) {
   if (word !== undefined) ZH.sheetWord = word;
   const z = zhP(), info = zhCharInfo(ch), groups = zhLive(z.groups);
@@ -956,9 +964,9 @@ function zhReader() {
       <div class="card"><h3 style="margin-top:0">New text from my words</h3>
         <p class="small muted" style="margin-top:-4px">Copies a prompt for Claude Code (uses your plan, not the API). Paste it into a Claude Code window; it writes the text where StudyHub finds it.</p>
         <div class="zh-form">
-          <label>Words <select data-zc="gen-source">${opt('weak', 'My weakest words')}${opt('weakcats', 'Weakest in the ticked categories')}${opt('flagged', 'Flagged words and characters')}${groups.map(([gid, x]) => opt('g:' + gid, 'Look-alikes ' + esc(x.chars.join(' ')))).join('')}</select></label>
-          <label>How many <input type="number" min="3" max="40" value="${g.n}" data-zc="gen-n" class="zh-in" style="width:70px"></label>
-          <label>Length <select data-zc="gen-len">${[['short', 'Short (~150 characters)'], ['medium', 'Medium (~350)'], ['long', 'Long (~700)']].map(([v, t]) => `<option value="${v}" ${g.len === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+          <label>Words <select data-zc="gen-source">${opt('weak', 'My weakest words')}${opt('weakcats', 'Weakest in the ticked categories')}${opt('flagged', 'Flagged words and characters')}${opt('unk', "Words with characters I don't understand")}${groups.map(([gid, x]) => opt('g:' + gid, 'Look-alikes ' + esc(x.chars.join(' ')))).join('')}</select></label>
+          <label>How many <input type="number" min="3" max="60" value="${g.n}" data-zc="gen-n" class="zh-in" style="width:70px"></label>
+          <label>Length <select data-zc="gen-len">${[['short', 'Short (~150 characters)'], ['medium', 'Medium (~350)'], ['long', 'Long (~700)'], ['xlong', 'Very long (~1,200)'], ['xxlong', 'Extra long (~2,000)'], ['huge', 'Huge (~3,000)']].map(([v, t]) => `<option value="${v}" ${g.len === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
           <label>Kind <select data-zc="gen-style">${[['story', 'Short story'], ['dialogue', 'Dialogue'], ['diary', 'Diary entry'], ['news', 'News-style report']].map(([v, t]) => `<option value="${v}" ${g.style === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
           <label style="flex:1 1 220px">Topic <input class="zh-in" data-zc="gen-topic" value="${esc(g.topic)}" placeholder="optional, e.g. studying in Shanghai" style="width:100%"></label>
         </div>
@@ -974,16 +982,35 @@ function zhReader() {
     ${texts.length ? `<div class="zh-texts">${texts.map(t => `<a class="card zh-link" href="#/zh/read/${encodeURIComponent(t.id)}"><b lang="zh">${esc(t.title || 'Text')}</b>${t.titleEn ? ` <span class="muted small">${esc(t.titleEn)}</span>` : ''}<div class="small muted">${t.created ? new Date(t.created).toLocaleDateString() : ''}${(t.targets || []).length ? ` · ${t.targets.length} target words` : ''}</div></a>`).join('')}</div>` : '<p class="muted">No texts yet.</p>'}`;
 }
 // the words a new text should practise
+// The words a new text should practise: a random draw from the weak words, the weaker the likelier (weight = weakness²),
+// leaving out words that were targets in the last 5 texts while there are enough others - so each text brings new ones.
+const ZH_LENS = { short: 150, medium: 350, long: 700, xlong: 1200, xxlong: 2000, huge: 3000 };
+function zhDraw(cands, n) {
+  const recent = new Set(zhTexts().slice(0, 5).flatMap(t => t.targets || []));
+  let pool = cands.map(c => [c, zhWeak(c)]).filter(([, w]) => w !== null && w >= 0.2);
+  if (pool.length < n) pool = cands.map(c => [c, zhWeak(c) ?? 0.3]);               // few weak words: take the others too
+  const fresh = pool.filter(([c]) => !recent.has(c.s));
+  if (fresh.length >= n) pool = fresh;
+  pool = pool.sort((a, b) => b[1] - a[1]).slice(0, Math.max(n * 8, 80));           // the weakest few hundred at most
+  const out = [];
+  while (out.length < n && pool.length) {
+    const total = pool.reduce((t, [, w]) => t + w * w + 0.01, 0);
+    let r = Math.random() * total, k = 0;
+    for (; k < pool.length - 1; k++) { r -= pool[k][1] * pool[k][1] + 0.01; if (r <= 0) break; }
+    out.push(pool.splice(k, 1)[0][0]);
+  }
+  return out;
+}
 function zhTargets(g) {
-  const n = Math.max(3, Math.min(40, +g.n || 12)), byWeak = cs => cs.map(c => [c, zhWeak(c)]).filter(([, w]) => w !== null).sort((a, b) => b[1] - a[1]).map(([c]) => c);
+  const n = Math.max(3, Math.min(60, +g.n || 12));
   if (g.source.startsWith('g:')) {
     const grp = zhP().groups[g.source.slice(2)]; if (!grp || grp.del) return { words: [], chars: [] };
-    const ws = ZH.cards.filter(c => grp.chars.some(ch => c.s.includes(ch)));
-    return { words: byWeak(ws).concat(ws.filter(c => zhWeak(c) === null)).slice(0, n), chars: grp.chars };
+    return { words: zhDraw(ZH.cards.filter(c => grp.chars.some(ch => c.s.includes(ch))), n), chars: grp.chars };
   }
-  if (g.source === 'flagged') { const gc = zhGroupChars(); return { words: byWeak(ZH.cards.filter(c => zhFlagged(c, gc))).slice(0, n), chars: zhLive(zhP().hard).map(([ch]) => ch) }; }
+  if (g.source === 'flagged') { const gc = zhGroupChars(); return { words: zhDraw(ZH.cards.filter(c => zhFlagged(c, gc)), n), chars: zhLive(zhP().hard).map(([ch]) => ch) }; }
+  if (g.source === 'unk') { const u = zhUnkList().map(([ch]) => ch); return { words: zhDraw(ZH.cards.filter(c => u.some(ch => c.s.includes(ch))), n), chars: [] }; }
   const cs = g.source === 'weakcats' ? ZH.cards.filter(c => zhMatches(c, { cats: UI.zhCats || [], filter: 'all' })) : ZH.cards;
-  return { words: byWeak(cs).slice(0, n), chars: [] };
+  return { words: zhDraw(cs, n), chars: [] };
 }
 function zhBuildPrompt() {
   const g = Object.assign({ source: 'weak', n: 12, len: 'medium', style: 'story', topic: '' }, UI.zhGen || {});
@@ -995,7 +1022,7 @@ function zhBuildPrompt() {
   const d = new Date(), pad = x => String(x).padStart(2, '0');
   const id = `zh-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}-${Math.random().toString(36).slice(2, 6)}`;
   const dir = ZH.textsDir || '<StudyHub folder>/content/_chinese/texts';
-  const len = { short: 150, medium: 350, long: 700 }[g.len] || 350;
+  const len = ZH_LENS[g.len] || 350, big = len >= 1000;
   const kind = { story: 'a short story (some dialogue is fine)', dialogue: 'a dialogue between two or three people', diary: 'a diary entry', news: 'a short news-style report' }[g.style] || 'a short story';
   const p = `Write a Chinese reading text for me (I am learning Mandarin) and save it as a JSON file. Do not ask questions; just write the file.
 
@@ -1008,7 +1035,7 @@ Keep the rest of the vocabulary simple: mostly words from my list below and very
 My flashcard categories (to judge my level): ${cats.join(', ') || 'unknown'}
 Words I know: ${known.join(' ')}
 
-Length: about ${len} Chinese characters, in short paragraphs. Kind: ${kind}. Topic: ${g.topic.trim() || 'your choice, everyday life'}.
+Length: about ${len} Chinese characters (count them; do not stop much shorter), in short paragraphs of 60-120 characters${big ? ', as a story with several scenes so it stays interesting' : ''}. Kind: ${kind}. Topic: ${g.topic.trim() || 'your choice, everyday life'}.
 Simplified characters only. No pinyin inside the Chinese text.
 
 Save exactly this JSON shape (UTF-8, valid JSON) to this file:
@@ -1024,7 +1051,7 @@ ${dir}/${id}.json
   "glossary": { "词语": { "py": "pinyin with tone marks", "en": "meaning as used in this text" } }
 }
 
-The glossary must list every word in the text, split into words the way a dictionary would (single-character words and names too, no punctuation). Before saving, check that every target word appears in the text and that the file parses as JSON. Then reply with one line.`;
+${big ? 'The glossary must list every word in the text that is NOT in my "Words I know" list, split into words the way a dictionary would (names too, no punctuation); words I know may be left out to keep the file small.' : 'The glossary must list every word in the text, split into words the way a dictionary would (single-character words and names too, no punctuation).'} Before saving, check that every target word appears in the text and that the file parses as JSON. Then reply with one line.`;
   return { id, prompt: p };
 }
 async function zhCopy(text) {
@@ -1081,9 +1108,24 @@ if (window.speechSynthesis) try { speechSynthesis.getVoices(); } catch (e) { /* 
 
 /* ---------- events (own listeners: nothing here goes through the course handlers) ---------- */
 function zhRedraw() { const y = scrollY; viewZh(parseRoute()); window.scrollTo(0, y); }
+/* Words in the reader are plain text (spans): phones send no click for a tap on plain text, so a short tap (finger down
+   and up in the same place) is handled here, and the click that may follow it is ignored. Works with a mouse too. */
+let zhTap = null, zhTapEl = null, zhTapAt = 0;
+document.addEventListener('pointerdown', ev => { const el = ev.isPrimary && ev.target.closest && ev.target.closest('span[data-zh]'); zhTap = el ? { x: ev.clientX, y: ev.clientY, t: Date.now(), el } : null; }, true);
+document.addEventListener('pointerup', ev => {
+  const s = zhTap; zhTap = null;
+  if (!s || Math.hypot(ev.clientX - s.x, ev.clientY - s.y) > 10 || Date.now() - s.t > 600) return;
+  const el = ev.target.closest && ev.target.closest('span[data-zh]');
+  if (el !== s.el) return;
+  zhTapEl = el; zhTapAt = Date.now(); zhAct(el, ev);
+}, true);
 document.addEventListener('click', ev => {
   const el = ev.target.closest && ev.target.closest('[data-zh]');
   if (!el) return;
+  if (el === zhTapEl && Date.now() - zhTapAt < 700) return;      // already handled as a tap
+  zhAct(el, ev);
+});
+function zhAct(el, ev) {
   const a = el.dataset.zh, d = el.dataset;
   switch (a) {
     case 'flip': if (typeof tapFlipAt === 'undefined' || Date.now() - tapFlipAt > 700) zhFlip(); break;   // a tap already flipped it
@@ -1109,8 +1151,8 @@ document.addEventListener('click', ev => {
     case 'cat-up': { const add = zhCatUp(d.p, zhCatData().kids), covered = x => add.some(a => x === a || x.startsWith(a + '/'));
       UI.zhCats = (UI.zhCats || []).filter(x => !covered(x)).concat(add); ZH.lastTick = null; saveUI(); zhTreeRedraw(); toast(`Ticked ${zhCatName(d.p)} and up (${add.length} folders)`); break; }
     case 'cat-open': { const o = zhCatOpen(zhCatData().kids); o.has(d.p) ? o.delete(d.p) : o.add(d.p); UI.zhOpen = [...o]; saveUI(); zhTreeRedraw(); break; }
-    case 'char': ev.stopPropagation(); zhCharSheet(d.c, el, d.w); break;
-    case 'word': zhWordSheet(d.w, el); break;
+    case 'char': ev.stopPropagation(); if (zhSheetIs('c:' + d.c, el)) zhSheetClose(); else { zhCharSheet(d.c, el, d.w); zhSheetMark('c:' + d.c, el); } break;
+    case 'word': if (zhSheetIs('w:' + d.w, el)) zhSheetClose(); else { zhWordSheet(d.w, el); zhSheetMark('w:' + d.w, el); } break;
     case 'sheet-close': zhSheetClose(); break;
     case 'speak': ev.stopPropagation(); zhSpeak(d.w); break;
     case 'full': { const f = $('#zh-sheet .zh-full'); if (f) { f.hidden = !f.hidden; el.textContent = f.hidden ? 'Definition' : 'Less'; } break; }
@@ -1138,7 +1180,7 @@ document.addEventListener('click', ev => {
       zhWatch(b.id); const st = $('#zh-gen-status'); if (st) st.textContent = zhServed() ? 'Waiting for Claude Code to write the text… it opens here by itself.' : 'When Claude Code is done, run python3 build.py and reload.'; break; }
     case 'paste-open': zhPasteOpen(); break;
   }
-});
+}
 document.addEventListener('change', ev => {
   const el = ev.target, k = el.dataset && el.dataset.zc; if (!k) return;
   const gen = (f, v) => { UI.zhGen = Object.assign({ source: 'weak', n: 12, len: 'medium', style: 'story', topic: '' }, UI.zhGen, { [f]: v }); saveUI(); };
@@ -1163,7 +1205,7 @@ document.addEventListener('change', ev => {
     case 'showen': UI.zhShowEn = el.checked; saveUI(); zhRedraw(); return;
     case 'import': zhImport(el.files[0]); return;
     case 'gen-source': gen('source', el.value); return;
-    case 'gen-n': gen('n', Math.max(3, Math.min(40, +el.value || 12))); return;
+    case 'gen-n': gen('n', Math.max(3, Math.min(60, +el.value || 12))); return;
     case 'gen-len': gen('len', el.value); return;
     case 'gen-style': gen('style', el.value); return;
     case 'gen-topic': gen('topic', el.value); return;
@@ -1198,7 +1240,7 @@ window.addEventListener('load', () => setTimeout(() => { if (zhServed() && !wind
   s.textContent = `
 [lang=zh],.zh-hw,.zh-sbig,.zh-big,.zh-ch{font-family:"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",sans-serif}
 .zh-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
-.zh-form{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}.zh-form label{display:inline-flex;gap:6px;align-items:center}.zh-form [hidden]{display:none}
+.zh-form{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}.zh-form label{display:inline-flex;gap:6px;align-items:center}.zh-form [hidden]{display:none}.zh-form label{max-width:100%;flex-wrap:wrap}.zh-form select{max-width:100%;min-width:0}
 .zh-in{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;padding:6px 8px;font:inherit}
 .zh-tree{max-height:440px;overflow:auto;margin-top:8px}.zh-cat{display:flex;align-items:center;gap:6px;padding:3px 0}
 .zh-tw{width:24px;height:24px;flex:none;border:0;background:none;color:var(--text);cursor:pointer;padding:0;font-size:1rem;border-radius:6px}.zh-tw:hover{background:var(--surface2)}
@@ -1285,6 +1327,7 @@ body.zh-sheet-open #main{padding-bottom:50vh}
 .zw{cursor:pointer;border-radius:4px;padding:0 1px}.zw:hover{background:var(--surface2)}
 .zw.indeck{text-decoration:underline dotted var(--muted);text-underline-offset:6px}.zw.weak{text-decoration-color:var(--bad)}
 .zw.tgt{background:var(--accent-soft)}
+.zw.zh-on,.zh-ch.zh-on{outline:2px solid var(--accent);outline-offset:1px;border-radius:4px}
 .zh-en{display:none;font-size:.95rem;line-height:1.5;color:var(--muted);margin-top:4px!important}.zh-en.on{display:block}.zh-enb{font-size:.75rem}
 .zh-read{max-width:860px}.zh-bad{color:var(--bad)}.zh-weak{color:var(--bad)}.zh-tgtp{background:var(--accent-soft)}
 .zh-prompt{width:100%;min-height:150px;margin-top:10px;font-family:var(--mono);font-size:.78rem}
