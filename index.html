@@ -155,6 +155,7 @@ body.top-hidden .sl-frame{height:calc(100vh - 272px)}body.top-hidden .sl-list{ma
 /* the notes scroll with the page (the slides stay pinned beside them): Safari mis-draws a separate scrolling notes panel
    on a zoomed page, so clicks hit something other than what is shown */
 .sidepane{min-width:0}
+body.static-site a[href^="#/docs/"]{display:none}
 body.only-zh .topbar .search,body.only-zh .topbar a[href="#/manage"],body.only-zh #ask-host{display:none}
 @media (max-width:1100px){.split{grid-template-columns:minmax(0,1fr);gap:16px}.split-handle{display:none}.pdfpane{position:static}.sidepane{max-height:none}}
 main{padding:24px;max-width:1040px;width:100%;margin:0 auto}
@@ -586,6 +587,12 @@ blockquote.note p{margin:.3em 0}
   async function open(raw) {
     const d = await getBlob(), salt = d.slice(5, 21), iv = d.slice(21, 33), key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
     const text = new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, d.slice(33)));
+    // slides: p/<name>.enc = iv(12) | AES-GCM, same key; the app asks for one when a lecture's slides are shown
+    window.STUDYHUB_OPENPDF = async name => {
+      const r = await fetch(name); if (!r.ok) throw new Error('slides not found (' + r.status + ')');
+      const b = new Uint8Array(await r.arrayBuffer());
+      return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.slice(0, 12) }, key, b.slice(12)));
+    };
     return text;
   }
   function run(text) {
@@ -1564,7 +1571,7 @@ function buildCourses() {
 }
 function makeLecture(course, raw, slug, user) {
   const p = parseLecture(raw);
-  const L = { course, slug, user, raw, title: p.title || slug, code: p.code || '', covers: p.covers || [], pdfs: p.pdfs, highlights: p.highlights, explained: p.explained, examples: p.examples, summary: p.summary, cards: p.cards, questions: p.questions, warnings: p.warnings };
+  const L = { course, slug, user, raw, title: p.title || slug, code: p.code || '', covers: p.covers || [], pdfs: window.STUDYHUB_NO_PDFS ? [] : p.pdfs, highlights: p.highlights, explained: p.explained, examples: p.examples, summary: p.summary, cards: p.cards, questions: p.questions, warnings: p.warnings };
   L.id = course.id + '/' + slug;
   L.cards.forEach(c => { c.id = L.id + '#' + hashStr(c.q); c.lec = L; c.oldIds = (c.was || []).map(t => L.id + '#' + hashStr(t)).concat(c.movedFrom || []); });
   L.questions.forEach(q => { q.id = L.id + '?' + hashStr(q.text); q.lec = L; q.oldIds = (q.was || []).map(t => L.id + '?' + hashStr(t)); const f = (U.fixes || {})[q.id]; if (f && !f.reset) applyFix(q, f); });
@@ -2039,6 +2046,7 @@ function parseRoute() {
   const r = { name: 'home', parts };
   // the public copy (engine/publish.py) carries only the Chinese part: every address opens it
   if (window.STUDYHUB_ONLY_ZH && parts[0] !== 'zh') return { name: 'zh', sub: '', parts: ['zh'] };
+  if (window.STUDYHUB_STATIC && parts[0] === 'docs') return r;      // the document editors need the server on the Mac
   if (!parts.length) return r;
   if (parts[0] === 'c' && parts[1]) {
     r.course = getCourse(parts[1]);
@@ -2061,6 +2069,7 @@ function render() {
   r.fresh = location.hash !== lastHash; lastHash = location.hash;   // a new address, not a redraw of the same page
   main.classList.remove('wide');
   document.body.classList.toggle('only-zh', !!window.STUDYHUB_ONLY_ZH);
+  document.body.classList.toggle('static-site', !!window.STUDYHUB_STATIC);   // GitHub Pages copy: no server on the Mac behind it
   if (session && session.noRecord && r.name !== 'play') session = null;
   renderSidebar(r);
   document.body.classList.remove('nav-open');
@@ -2784,7 +2793,8 @@ function calcPractice(L) {
     ${qs.map((q, i) => cgItem(q, `${i + 1} / ${qs.length}`)).join('')}</div>`;
 }
 /* PDFs live in the course folders next to StudyHub, or in StudyHub's own slides/ folder (shared copies) */
-const pdfUrl = p => encodeURI((p.startsWith('slides/') ? '' : '../') + p);
+// on the GitHub Pages copy the slides are encrypted files: 'enc:<file>' is decrypted by the password gate (engine/publish.py)
+const pdfUrl = p => window.STUDYHUB_PDFMAP ? (STUDYHUB_PDFMAP[p] ? 'enc:' + STUDYHUB_PDFMAP[p] : '') : encodeURI((p.startsWith('slides/') ? '' : '../') + p);
 /* ---------- Explain it: hide a notes section, explain it from memory (in your head or out loud), reveal, rate ---------- */
 const XTICK = {}, XTEXT = {}, XAI = {};   // per lecture + section: ticked terms, typed explanation, Claude's check (this visit)
 const XSTATE = {};   // per lecture + section: 'hidden' | 'revealed' (only for this visit)
@@ -3068,7 +3078,7 @@ function renderSlideSearch() {
 }
 /* Built-in slide viewer (PDF.js) for iPhone/iPad/Safari, which cannot scroll or jump within a PDF inside a page.
    Desktop Chrome/Edge/Firefox keep their own viewer. Needs an http(s) address (not file://). Add ?pdfjs=1 to force it. */
-const PDFJS_MODE = /^https?:$/.test(location.protocol) && (/[?&]pdfjs=1/.test(location.search) || /iPad|iPhone|iPod|Android/.test(navigator.userAgent)
+const PDFJS_MODE = !!window.STUDYHUB_PDFMAP || /^https?:$/.test(location.protocol) && (/[?&]pdfjs=1/.test(location.search) || /iPad|iPhone|iPod|Android/.test(navigator.userAgent)
   || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent)) || (/Safari\//.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg|Firefox/.test(navigator.userAgent)));
 const PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
 let pdfjsLoading = null; const pdfDocs = {};
@@ -3086,7 +3096,9 @@ async function mountPdfJs(box) {
   const src = box.dataset.src; if (!src) return;
   try {
     const lib = await loadPdfJs();
-    const doc = await (pdfDocs[src] || (pdfDocs[src] = lib.getDocument(src).promise));
+    const doc = await (pdfDocs[src] || (pdfDocs[src] = src.startsWith('enc:')
+      ? window.STUDYHUB_OPENPDF(src.slice(4)).then(data => lib.getDocument({ data }).promise)
+      : lib.getDocument(src).promise));
     if (!box.isConnected) return;
     box.innerHTML = '';
     for (let i = 1; i <= doc.numPages; i++) {
@@ -3217,7 +3229,7 @@ function studyBody(L, C, page, tail = '') {
   const sbox = searchable ? `<div class="slide-search"><input type="search" id="slide-q" placeholder="Search these slides…" aria-label="Search these slides" autocomplete="off"><div id="slide-res" class="slide-res" role="list"></div></div>` : '';
   return `<div class="split" style="${splitStyle()}"><div class="pdfpane">${L.pdfs.length > 1 ? `<div class="row" style="margin-bottom:6px">${L.pdfs.map((x, i) => `<button class="btn sm ${i === pdfIdx ? 'primary' : ''}" data-action="pdf" data-k="${i}">${x.startsWith('idb:') ? 'Uploaded slides' : esc(x.split('/').pop().replace(/\.pdf$/, '').slice(0, 40))}</button>`).join('')}</div>` : ''}
     ${sbox}${PDFJS_MODE && !isIdb ? `<div class="pdfjs" role="document" aria-label="Lecture slides" data-src="${esc(base)}" data-page="${page || ''}"><p class="pdfmsg">Loading slides...</p></div>` : `<iframe title="Lecture slides" ${src ? `src="${src}"` : ''} data-idb="${isIdb ? esc(cur) : ''}" class="pdfframe"></iframe>`}
-    <div class="small muted" style="margin-top:6px">If the slides don't show, <a href="${src}" target="_blank" rel="noopener">open the PDF in a new tab</a>. PDFs are read from the course folders next to StudyHub.</div></div>
+    ${String(base).startsWith('enc:') ? '' : `<div class="small muted" style="margin-top:6px">If the slides don't show, <a href="${src}" target="_blank" rel="noopener">open the PDF in a new tab</a>. PDFs are read from the course folders next to StudyHub.</div>`}</div>
     <div class="split-handle" role="separator" aria-orientation="vertical" aria-label="Resize slides and notes" tabindex="0" title="Drag to resize (double-click to reset)"></div>
     <div class="sidecol"><div class="sidepane card" id="sidepane">${panelHtml(L)}</div>${tail}</div></div>`;
 }
