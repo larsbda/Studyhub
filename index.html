@@ -2122,7 +2122,7 @@ const lecGroups = c => ({ lectures: c.lectures.filter(isLectureItem), other: c.l
 function renderSidebar(r) {
   if (window.STUDYHUB_ONLY_ZH) {
     const sub = r.name === 'zh' ? r.sub || '' : '', l = (s, h, t) => `<a class="nav-link ${sub === s ? 'active' : ''}" href="${h}">${t}</a>`;
-    $('#sidebar').innerHTML = `<a class="brand" href="#/zh"><span class="logo">▤</span>StudyHub</a>${l('', '#/zh', '中文 Chinese')}${l('compare', '#/zh/compare', 'Look-alikes')}${l('read', '#/zh/read', 'Reader')}`;
+    $('#sidebar').innerHTML = `<a class="brand" href="#/zh"><span class="logo">▤</span>StudyHub</a>${l('', '#/zh', '中文 Chinese')}${l('compare', '#/zh/compare', 'Look-alikes')}${l('read', '#/zh/read', 'Reader')}${l('chars', '#/zh/chars', 'Characters')}${l('stats', '#/zh/stats', 'Statistics')}`;
     return;
   }
   const cur = r.course;

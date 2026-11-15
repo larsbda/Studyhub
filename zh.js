@@ -14,7 +14,7 @@ let ZS = null;                                       // running flashcard set (s
 const zhServed = () => /^https?:$/.test(location.protocol);
 
 /* ---------- progress (synced, inside P) ---------- */
-function zhP() { const z = P.zh = P.zh || {}; for (const k of ['cards', 'hard', 'hardW', 'groups', 'texts', 'added', 'days', 'lq']) z[k] = z[k] || {}; return z; }
+function zhP() { const z = P.zh = P.zh || {}; for (const k of ['cards', 'hard', 'hardW', 'groups', 'texts', 'added', 'days', 'lq', 'unk']) z[k] = z[k] || {}; return z; }
 const zhLive = obj => Object.entries(obj || {}).filter(([, v]) => v && !v.del);
 // called from mergeP: every map merged item by item, newest t wins (deletions are kept as {del, t} so they win too)
 function zhMerge(a, b) {
@@ -242,6 +242,7 @@ function zhMatches(c, o, gc) {
   if (f === 'learning') return !zhLearned(c);
   if (f === 'learned') return zhLearned(c);
   if (f === 'flagged') return zhFlagged(c, gc);
+  if (f === 'unk') return [...c.s].some(zhUnk);
   return true;
 }
 function zhPool(o) {
@@ -339,7 +340,7 @@ function zhExample(c) {
   return null;
 }
 function zhCharsHtml(word, big) {
-  return [...word].map(ch => ZH_HAN.test(ch) ? `<button class="zh-ch${big ? ' big' : ''}${zhHard(ch) ? ' hard' : ''}" data-zh="char" data-c="${esc(ch)}" title="Flag or group this character">${esc(ch)}</button>` : esc(ch)).join('');
+  return [...word].map(ch => ZH_HAN.test(ch) ? `<button class="zh-ch${big ? ' big' : ''}${zhHard(ch) ? ' hard' : ''}${zhUnk(ch) ? ' unk' : ''}" data-zh="char" data-c="${esc(ch)}" data-w="${esc(word)}" title="Flag this character">${esc(ch)}</button>` : esc(ch)).join('');
 }
 function zhBack(c) {
   const chars = [...c.s].filter(ch => ZH_HAN.test(ch));
@@ -471,7 +472,8 @@ function zhSheet(html, anchor) {
   }
 }
 function zhSheetClose() { const el = document.getElementById('zh-sheet'); if (el) el.hidden = true; document.body.classList.remove('zh-sheet-open'); }
-function zhCharSheet(ch, anchor) {
+function zhCharSheet(ch, anchor, word) {
+  if (word !== undefined) ZH.sheetWord = word;
   const z = zhP(), info = zhCharInfo(ch), groups = zhLive(z.groups);
   const mine = groups.filter(([, g]) => g.chars.includes(ch)), other = groups.filter(([, g]) => !g.chars.includes(ch));
   const words = zhWordsWith(ch, 6);
@@ -479,7 +481,8 @@ function zhCharSheet(ch, anchor) {
       <div class="zh-sbig" lang="zh">${esc(ch)}</div>
       <div style="flex:1;min-width:0">${info.length ? info.slice(0, 3).map(i => `<div><b>${esc(i.py)}</b> <span class="muted">${esc(i.def)}</span></div>`).join('') : '<div class="muted">No dictionary entry here</div>'}
         <div class="row" style="margin-top:8px">
-          <button class="btn sm ${zhHard(ch) ? 'warnbtn' : ''}" data-zh="flag-char" data-c="${esc(ch)}">⚑ ${zhHard(ch) ? 'Flagged - unflag' : 'Flag as hard'}</button>
+          <button class="btn sm ${zhUnk(ch) ? 'primary' : ''}" data-zh="unk-toggle" data-c="${esc(ch)}" title="Collect it under Characters I don't understand">${zhUnk(ch) ? '✓ Understood now' : "? Don't understand"}</button>
+          <button class="btn sm ${zhHard(ch) ? 'warnbtn' : ''}" data-zh="flag-char" data-c="${esc(ch)}" title="A character you mix up with others (Look-alikes)">⚑ ${zhHard(ch) ? 'Flagged - unflag' : 'Flag as hard'}</button>
           <button class="btn sm ghost" data-zh="speak" data-w="${esc(ch)}">🔊</button></div></div></div>
     ${mine.length ? `<div class="small" style="margin-top:10px">In look-alike group${mine.length > 1 ? 's' : ''}: ${mine.map(([gid, g]) => `<a href="#/zh/compare" class="zh-chip" lang="zh">${esc(g.chars.join(' '))}</a>`).join(' ')}</div>` : ''}
     <div class="small" style="margin-top:10px"><b>Looks like…</b> ${other.length ? 'add to ' + other.slice(0, 8).map(([gid, g]) => `<button class="zh-chip" data-zh="group-add" data-g="${gid}" data-c="${esc(ch)}" lang="zh">${esc(g.chars.join(' '))} ＋</button>`).join(' ') + ' or ' : ''}
@@ -536,7 +539,7 @@ function zhQuiz() {
   if (!q) {
     main.innerHTML = `<div class="q-card card" style="text-align:center"><h2>${ZQ.right} / ${ZQ.qs.length} right</h2>
       ${ZQ.wrong.length ? `<p class="muted">Mixed up: <span lang="zh" class="zh-big sm" style="font-size:1.6rem">${[...new Set(ZQ.wrong)].map(esc).join(' ')}</span></p>` : '<p class="muted">No mix-ups.</p>'}
-      <div class="row" style="justify-content:center"><button class="btn primary" data-zh="quiz-again">Again</button><a class="btn ghost" href="#/zh/compare">Back to look-alikes</a></div></div>`;
+      <div class="row" style="justify-content:center"><button class="btn primary" data-zh="quiz-again">Again</button><a class="btn ghost" href="${ZQ.back || '#/zh/compare'}">${ZQ.back ? 'Back to the characters' : 'Back to look-alikes'}</a></div></div>`;
     return;
   }
   const w = q.word && ZH.byId.get(q.word), done = ZQ.pick !== null;
@@ -549,7 +552,7 @@ function zhQuiz() {
     const label = q.kind === 'pick' ? `<span lang="zh" class="zh-qbig">${esc(x)}</span>` : esc(zhQuizInfo(x));
     return `<button class="btn zh-qopt ${cls}" data-zh="quiz-pick" data-c="${esc(x)}" ${done ? 'disabled' : ''}>${label}${done && q.kind === 'pick' ? `<span class="small">${esc(zhQuizInfo(x))}</span>` : ''}</button>`;
   };
-  main.innerHTML = `<div class="deck-wrap"><div class="crumbs"><a href="#/zh/compare">← Look-alikes</a> · Quiz ${ZQ.i + 1} / ${ZQ.qs.length}</div>
+  main.innerHTML = `<div class="deck-wrap"><div class="crumbs"><a href="${ZQ.back || '#/zh/compare'}">← ${ZQ.back ? 'Characters' : 'Look-alikes'}</a> · Quiz ${ZQ.i + 1} / ${ZQ.qs.length}</div>
     <div class="card zh-quiz" style="text-align:center">${prompt}
       <div class="zh-qopts ${q.kind}">${q.opts.map(opt).join('')}</div>
       ${done ? `<p class="${ZQ.pick === q.ch ? 'zh-ok' : 'zh-bad'}" style="font-weight:600">${ZQ.pick === q.ch ? '✓ Right' : `✗ It was ${esc(q.ch)}`}</p><button class="btn primary" data-zh="quiz-next">Next <span class="kbd" style="background:transparent;color:inherit">Enter</span></button>` : ''}
@@ -561,6 +564,135 @@ function zhQuizPick(ch) {
   if (right) { ZQ.right++; rec.ok++; } else { ZQ.wrong.push(q.ch); rec.bad++; }
   rec.t = Date.now(); z.lq[q.ch] = rec; saveP(); zhQuiz();
 }
+/* ---------- statistics ---------- */
+// one bar chart: one measure, one colour (accent), bars anchored on the baseline; exact numbers on hover/tap and in a table
+function zhBars(rows, unit, label) {
+  const max = Math.max(1, ...rows.map(r => r.v));
+  const bars = rows.map(r => `<span class="zh-bar ${r.now ? 'now' : ''}" tabindex="0" data-tip="${esc(r.label)}: ${r.v} ${unit}" aria-label="${esc(r.label)}: ${r.v} ${unit}">
+    <i style="height:${r.v ? Math.max(3, Math.round(100 * r.v / max)) : 0}%"></i></span>`).join('');
+  return `<figure class="zh-chart" aria-label="${esc(label)}">
+    <div class="zh-chart-max small muted">${max}</div>
+    <div class="zh-bars" style="--n:${rows.length}">${bars}</div>
+    <div class="zh-chart-x small muted"><span>${esc(rows[0].short || rows[0].label)}</span><span>${esc(rows[rows.length - 1].short || rows[rows.length - 1].label)}</span></div>
+    <details class="zh-chart-table"><summary class="small muted">Show as table</summary><table class="small">${rows.map(r => `<tr><td>${esc(r.label)}</td><td>${r.v}</td></tr>`).join('')}</table></details>
+  </figure>`;
+}
+function zhStatsData() {
+  const z = zhP(), now = Date.now(), at = zhLearnAt(), cats = new Map();
+  const T = { cards: 0, learned: 0, here: 0, pleco: 0, right: 0, all: 0, due: 0 }, hard = [];
+  const add = (key, c, x) => { let o = cats.get(key); if (!o) cats.set(key, o = { cards: 0, learned: 0, here: 0, pleco: 0, right: 0, all: 0, due: 0 }); for (const k in x) o[k] += x[k]; };
+  for (const c of ZH.cards) {
+    const r = zhRec(c), pl = c.pl || {}, d = zhDue(c);
+    const x = { cards: 1, learned: zhScore(c) >= at ? 1 : 0, here: r ? r.n || 0 : 0, pleco: pl.n || 0,
+      right: (r ? r.ok || 0 : 0) + (pl.ok || 0), all: (r ? (r.ok || 0) + (r.bad || 0) : 0) + (pl.ok || 0) + (pl.bad || 0), due: d !== null && d <= now ? 1 : 0 };
+    for (const k in x) T[k] += x[k];
+    const paths = new Set();
+    zhCatsOf(c).forEach(cat => { const p = cat.split('/'); for (let i = 1; i <= p.length; i++) paths.add(p.slice(0, i).join('/')); });
+    paths.forEach(p => add(p, c, x));
+    const miss = x.all - x.right;
+    if (x.all >= 3 && miss) hard.push([c, miss / x.all, miss, x.all]);
+  }
+  hard.sort((a, b) => b[1] - a[1] || b[2] - a[2]);
+  // streak: days in a row with reviews, counting back from today (or yesterday, if nothing yet today)
+  let streak = 0;
+  for (let k = (z.days[today()] || {}).rev ? 0 : 1; ; k++) { const d = z.days[dayKey(now - k * DAY)]; if (d && d.rev) streak++; else break; }
+  return { T, cats, hard: hard.slice(0, 12), streak };
+}
+function zhStatsPage() {
+  const { T, cats, hard, streak } = zhStatsData(), z = zhP(), pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '-';
+  const days = n => Array.from({ length: n }, (_, k) => { const key = dayKey(Date.now() - (n - 1 - k) * DAY); return { key, d: z.days[key] || {} }; });
+  const d30 = days(30), fmt = key => new Date(key + 'T12:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  const revRows = d30.map(({ key, d }) => ({ label: fmt(key), v: d.rev || 0, now: key === today() }));
+  const lrnRows = d30.map(({ key, d }) => ({ label: fmt(key), v: d.lrn || 0, now: key === today() }));
+  // reviews coming up: cards whose review date falls on each of the next 14 days
+  const ahead = Array.from({ length: 14 }, (_, k) => ({ start: new Date(new Date().setHours(0, 0, 0, 0) + (k + 1) * DAY).getTime(), v: 0 }));
+  for (const c of ZH.cards) { const d = zhDue(c); if (d === null) continue; const k = Math.floor((d - ahead[0].start) / DAY); if (k >= 0 && k < 14) ahead[k].v++; }
+  const aheadRows = ahead.map(a => ({ label: new Date(a.start).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }), short: new Date(a.start).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }), v: a.v }));
+  const rev30 = revRows.reduce((n, r) => n + r.v, 0);
+  const tile = (n, l, sub) => `<div class="zh-tile"><div class="zh-tile-n">${n}</div><div class="small muted">${l}</div>${sub ? `<div class="small muted">${sub}</div>` : ''}</div>`;
+  // the category table: top folder > level > set; levels fold open
+  const kids = new Map();
+  [...cats.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).forEach(p => { const i = p.lastIndexOf('/'), par = i < 0 ? '' : p.slice(0, i); if (!kids.has(par)) kids.set(par, []); kids.get(par).push(p); });
+  const row = (p, depth) => { const o = cats.get(p), name = p.slice(p.lastIndexOf('/') + 1);
+    return `<div class="zh-srow d${depth}"><span class="zh-sname">${esc(name)}</span><span>${o.cards}</span>
+      <span class="zh-slearn"><span class="zh-lb"><i style="width:${Math.round(100 * o.learned / o.cards)}%"></i></span>${pct(o.learned, o.cards)}</span>
+      <span>${o.here + o.pleco}<span class="muted"> (${o.here} here)</span></span><span>${pct(o.right, o.all)}</span><span>${o.due}</span></div>`; };
+  const tree = (p, depth) => { const ch = kids.get(p) || [];
+    return ch.length ? `<details class="zh-sgroup" ${depth === 0 ? 'open' : ''}><summary>${row(p, depth)}</summary>${ch.map(x => tree(x, depth + 1)).join('')}</details>` : row(p, depth); };
+  main.innerHTML = `<div class="crumbs"><a href="#/zh">← Chinese</a></div><h1>Statistics</h1>
+    <div class="zh-tiles">
+      ${tile(T.here + T.pleco, 'repetitions', `${T.here} here · ${T.pleco} in Pleco`)}
+      ${tile(pct(T.right, T.all), 'right', `${T.right} of ${T.all} answers`)}
+      ${tile(T.learned, 'learned', `of ${T.cards} cards (${pct(T.learned, T.cards)})`)}
+      ${tile(streak, streak === 1 ? 'day in a row' : 'days in a row', `${rev30} reviews in 30 days`)}
+      ${tile(T.due, 'due now', '')}
+    </div>
+    <div class="zh-grid" style="margin-top:16px">
+      <div class="card"><h3 style="margin-top:0">Reviews per day</h3><p class="small muted" style="margin-top:-6px">last 30 days, in StudyHub</p>${zhBars(revRows, 'reviews', 'Reviews per day, last 30 days')}</div>
+      <div class="card"><h3 style="margin-top:0">Words learned per day</h3><p class="small muted" style="margin-top:-6px">last 30 days</p>${zhBars(lrnRows, 'learned', 'Words learned per day, last 30 days')}</div>
+      <div class="card"><h3 style="margin-top:0">Coming up</h3><p class="small muted" style="margin-top:-6px">reviews due on each of the next 14 days (${T.due} due now)</p>${zhBars(aheadRows, 'due', 'Reviews due on each of the next 14 days')}</div>
+    </div>
+    <div class="card" style="margin-top:16px"><h3 style="margin-top:0">By category</h3>
+      <div class="zh-srow zh-shead small muted"><span>Category</span><span>Cards</span><span>Learned</span><span>Repetitions</span><span>Right</span><span>Due</span></div>
+      ${(kids.get('') || []).map(p => tree(p, 0)).join('')}</div>
+    ${hard.length ? `<div class="card" style="margin-top:16px"><h3 style="margin-top:0">Hardest words</h3><p class="small muted" style="margin-top:-6px">most often wrong (at least 3 answers, here and in Pleco)</p>
+      <div class="zh-misslist">${hard.map(([c, , miss, all]) => `<button class="zh-mrow" data-zh="word" data-w="${esc(c.s)}"><b lang="zh">${esc(zhHead(c))}</b><span class="zh-mpy">${esc(c.py)}</span><span class="zh-mm">${all - miss}/${all} right · ${esc(zhShort(c.def, 1))}</span></button>`).join('')}</div>
+      <div class="row" style="margin-top:10px"><button class="btn sm" data-zh="drill-hard">Practise these ${hard.length}</button></div></div>` : ''}`;
+}
+// exact numbers on hover (mouse) or tap (phone) for anything with data-tip
+function zhTip(el) {
+  let t = document.getElementById('zh-tip');
+  if (!el) { if (t) t.hidden = true; return; }
+  if (!t) { t = document.createElement('div'); t.id = 'zh-tip'; t.setAttribute('role', 'status'); document.body.appendChild(t); }
+  t.textContent = el.dataset.tip; t.hidden = false;
+  const r = el.getBoundingClientRect(), w = t.offsetWidth;
+  t.style.left = Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+  t.style.top = Math.max(8, r.top - t.offsetHeight - 6) + 'px';
+}
+document.addEventListener('pointerover', ev => { const el = ev.target.closest && ev.target.closest('[data-tip]'); zhTip(el || null); });
+document.addEventListener('focusin', ev => { const el = ev.target.closest && ev.target.closest('[data-tip]'); if (el) zhTip(el); });
+document.addEventListener('scroll', () => zhTip(null), true);
+
+/* ---------- characters I don't understand ---------- */
+// flagged from a word (tap the character on a card or in the reader): { t, w = the word it was flagged in }
+const zhUnk = ch => { const x = zhP().unk[ch]; return !!(x && !x.del); };
+function zhSetUnk(ch, on, word) { zhP().unk[ch] = on ? { t: Date.now(), w: word || '' } : { t: Date.now(), del: true }; saveP(); }
+const zhUnkList = () => zhLive(zhP().unk).sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
+function zhCharsPage() {
+  const list = zhUnkList(), chars = list.map(([ch]) => ch);
+  const nWords = ZH.cards.filter(c => chars.some(ch => c.s.includes(ch))).length;
+  const row = ([ch, x]) => {
+    const info = zhCharInfo(ch), words = zhWordsWith(ch, 6), from = x.w && ZH.bySimp.get(x.w), q = zhP().lq[ch];
+    return `<div class="card zh-unk">
+      <button class="zh-big" data-zh="char" data-c="${esc(ch)}" data-w="${esc(x.w || '')}" lang="zh">${esc(ch)}</button>
+      <div class="zh-unk-body">
+        ${info.length ? info.slice(0, 3).map(i => `<div><b class="zh-pyc">${esc(i.py)}</b> ${esc(i.def)}</div>`).join('') : '<div class="muted">No dictionary entry here (it loads through Start StudyHub or on the phone app)</div>'}
+        ${from ? `<div class="small muted" style="margin-top:6px">Flagged in <button class="zh-chip" data-zh="word" data-w="${esc(from.s)}"><span lang="zh">${zhMark(from.s, ch)}</span> <span>${esc(zhShort(from.def, 1))}</span></button></div>` : ''}
+        ${words.length ? `<div class="small" style="margin-top:6px">${words.filter(c => !from || c.id !== from.id).slice(0, 5).map(c => `<button class="zh-chip" data-zh="word" data-w="${esc(c.s)}"><span lang="zh">${zhMark(c.s, ch)}</span> <span class="muted">${esc(zhShort(c.def, 1))}</span></button>`).join(' ')}</div>` : ''}
+        <div class="row small" style="margin-top:8px"><button class="btn sm good" data-zh="unk-off" data-c="${esc(ch)}">✓ Understood</button>
+          <button class="btn sm ghost" data-zh="speak" data-w="${esc(ch)}">🔊</button>${q && q.ok + q.bad ? `<span class="muted">test ${q.ok}/${q.ok + q.bad}</span>` : ''}</div>
+      </div></div>`;
+  };
+  main.innerHTML = `<div class="crumbs"><a href="#/zh">← Chinese</a></div><h1>Characters I don't understand</h1>
+    <p class="muted small" style="margin-top:-6px">Tap a character of a word (on the back of a card, or in a word in the reader) and choose <b>? Don't understand</b>. They collect here until you mark them understood.</p>
+    ${list.length ? `<div class="row" style="margin-bottom:14px">
+        <button class="btn primary" data-zh="unk-test" ${chars.some(ch => zhQuizInfo(ch)) ? '' : 'disabled'}>Test me (${list.length})</button>
+        <button class="btn" data-zh="unk-words" ${nWords ? '' : 'disabled'}>Practise the ${nWords} word${nWords === 1 ? '' : 's'} with these</button></div>
+      ${list.map(row).join('')}` : '<div class="card muted">None yet.</div>'}`;
+}
+// test: see the character, pick its reading and meaning; wrong options are other characters from your words
+function zhQuizChars(chars) {
+  const known = chars.filter(ch => zhQuizInfo(ch));
+  if (!known.length) { toast('No dictionary meanings here for these characters'); return; }
+  const pool = [...new Set(ZH.cards.flatMap(c => [...c.s]).filter(ch => ZH_HAN.test(ch) && !known.includes(ch)))];
+  const qs = shuffle(known).map(ch => {
+    const others = known.filter(x => x !== ch).concat(shuffle(pool).slice(0, 40)).filter(x => zhQuizInfo(x) && zhQuizInfo(x) !== zhQuizInfo(ch));
+    return { kind: 'mean', ch, opts: shuffle([ch, ...shuffle([...new Set(others)]).slice(0, 3)]) };
+  });
+  ZQ = { qs: qs.slice(0, 20), i: 0, right: 0, wrong: [], pick: null, chars, back: '#/zh/chars' };
+  go('#/zh/quiz');
+}
+
 function viewZh(r) {
   zhInit();
   const sub = r.sub || '';
@@ -569,6 +701,8 @@ function viewZh(r) {
   if (sub === 'play') zhPlay();
   else if (sub === 'compare') zhCompare();
   else if (sub === 'quiz') zhQuiz();
+  else if (sub === 'chars') zhCharsPage();
+  else if (sub === 'stats') zhStatsPage();
   else if (sub === 'read' && r.arg) zhReadText(r.arg);
   else if (sub === 'read') zhReader();
   else zhHome();
@@ -658,7 +792,7 @@ function zhHome() {
         <h3 style="margin-top:0">Flashcard sets</h3>
         <div class="zh-form">
           <label>Cards per set <input type="number" min="1" max="500" value="${zhBatch()}" data-zc="batch" class="zh-in" style="width:80px"></label>
-          <label>Cards ${sel('filter', [['all', 'All'], ['learning', 'Not learned yet'], ['learned', 'Learned'], ['weak', 'Weak'], ['due', 'Due for review'], ['new', 'New (never reviewed)'], ['flagged', 'Flagged / look-alikes']], o.filter)}</label>
+          <label>Cards ${sel('filter', [['all', 'All'], ['learning', 'Not learned yet'], ['learned', 'Learned'], ['weak', 'Weak'], ['due', 'Due for review'], ['new', 'New (never reviewed)'], ['flagged', 'Flagged / look-alikes'], ['unk', "Characters I don't understand"]], o.filter)}</label>
           <label class="zh-weakmin" ${o.filter === 'weak' ? '' : 'hidden'}>Weak from <input type="range" min="0.1" max="0.8" step="0.05" value="${o.weakMin}" data-zc="weakmin"> <span id="zh-wm">${Math.round(o.weakMin * 100)}%</span></label>
           <label>Order ${sel('order', [['weak', 'Weakest first'], ['due', 'Most overdue first'], ['random', 'Random']], o.order)}</label>
           <label>Show ${sel('dir', [['hz', 'Characters → meaning'], ['en', 'Meaning → characters'], ['type', 'Characters → type the pinyin'], ['listen', 'Listen → meaning']], UI.zhDir || 'hz')}</label>
@@ -677,6 +811,8 @@ function zhHome() {
     </div>
     <div class="zh-grid" style="margin-top:16px">
       <a class="card zh-link" href="#/zh/compare"><h3 style="margin:0">Look-alikes</h3><p class="muted small" style="margin:6px 0 0">${st.groups} group${st.groups === 1 ? '' : 's'} · flagged characters side by side</p></a>
+      <a class="card zh-link" href="#/zh/chars"><h3 style="margin:0">Characters I don't understand</h3><p class="muted small" style="margin:6px 0 0">${zhUnkList().length} character${zhUnkList().length === 1 ? '' : 's'} · tap a character on a card to add it · test yourself</p></a>
+      <a class="card zh-link" href="#/zh/stats"><h3 style="margin:0">Statistics</h3><p class="muted small" style="margin:6px 0 0">repetitions, learned and due per set · reviews per day · hardest words</p></a>
       <a class="card zh-link" href="#/zh/read"><h3 style="margin:0">Reader</h3><p class="muted small" style="margin:6px 0 0">${zhTexts().length} text${zhTexts().length === 1 ? '' : 's'} · tap a word for its meaning · new texts from your weak words</p></a>
     </div>
     <details class="card" style="margin-top:16px"><summary style="cursor:pointer;font-weight:700">Update deck from Pleco</summary>
@@ -935,11 +1071,17 @@ document.addEventListener('click', ev => {
     case 'start': zhStart(zhOpts()); break;
     case 'next-set': zhNext(); break;
     case 'undo': zhUndo(); break;
+    case 'drill-hard': zhStart({ ids: zhStatsData().hard.map(([c]) => c.id), order: 'keep', title: 'Hardest words' }); break;
     case 'type-check': zhTypeCheck(); break;
     case 'today': { const T = zhToday(); if (!T.cards.length) { toast('Nothing due today'); break; } zhStart({ ids: T.cards.map(c => c.id), order: 'keep', title: 'Today', today: true }); break; }
     case 'quiz-group': zhQuizStart([d.g]); break;
     case 'quiz-all': zhQuizStart(zhLive(zhP().groups).map(([gid]) => gid)); break;
-    case 'quiz-again': zhQuizStart(ZQ ? ZQ.gids : []); break;
+    case 'quiz-again': if (ZQ && ZQ.chars) zhQuizChars(ZQ.chars); else zhQuizStart(ZQ ? ZQ.gids : []); break;
+    case 'unk-toggle': { const on = !zhUnk(d.c); zhSetUnk(d.c, on, ZH.sheetWord); $$(`.zh-ch[data-c="${CSS.escape(d.c)}"]`).forEach(b => b.classList.toggle('unk', on));
+      toast(on ? `${d.c} added to Characters I don't understand` : `${d.c} marked as understood`); zhCharSheet(d.c); if (/#\/zh\/chars/.test(location.hash)) zhRedraw(); break; }
+    case 'unk-off': zhSetUnk(d.c, false); toast(`${d.c} marked as understood`); zhRedraw(); break;
+    case 'unk-test': zhQuizChars(zhUnkList().map(([ch]) => ch)); break;
+    case 'unk-words': { const cs = zhUnkList().map(([ch]) => ch); zhStart({ ids: ZH.cards.filter(c => cs.some(ch => c.s.includes(ch))).map(c => c.id), order: 'weak', title: 'Characters I don\'t understand' }); break; }
     case 'quiz-pick': zhQuizPick(d.c); break;
     case 'quiz-next': ZQ.i++; ZQ.pick = null; zhQuiz(); window.scrollTo(0, 0); break;
     case 'redo-missed': zhStart({ ids: ZS.missed.slice(), order: 'random', title: 'missed', from: ZS.o.from || { o: ZS.o, seen: ZS.seen, setNo: ZS.setNo } }); break;
@@ -947,7 +1089,7 @@ document.addEventListener('click', ev => {
     case 'cat-up': { const add = zhCatUp(d.p, zhCatData().kids), covered = x => add.some(a => x === a || x.startsWith(a + '/'));
       UI.zhCats = (UI.zhCats || []).filter(x => !covered(x)).concat(add); ZH.lastTick = null; saveUI(); zhTreeRedraw(); toast(`Ticked ${zhCatName(d.p)} and up (${add.length} folders)`); break; }
     case 'cat-open': { const o = zhCatOpen(zhCatData().kids); o.has(d.p) ? o.delete(d.p) : o.add(d.p); UI.zhOpen = [...o]; saveUI(); zhTreeRedraw(); break; }
-    case 'char': ev.stopPropagation(); zhCharSheet(d.c, el); break;
+    case 'char': ev.stopPropagation(); zhCharSheet(d.c, el, d.w); break;
     case 'word': zhWordSheet(d.w, el); break;
     case 'sheet-close': zhSheetClose(); break;
     case 'speak': ev.stopPropagation(); zhSpeak(d.w); break;
@@ -1066,6 +1208,23 @@ window.addEventListener('load', () => setTimeout(() => { if (zhServed() && !wind
 .zh-afoot{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
 @media (min-width:701px){.zh-play .rate{position:sticky;bottom:0;z-index:5;padding:10px 0;background:linear-gradient(transparent,var(--bg) 30%)}}
 .zh-keys{text-align:center;margin-top:12px}
+.zh-ch.unk{text-decoration:underline dotted var(--accent) 2px;text-underline-offset:6px}
+.zh-unk{display:flex;gap:18px;align-items:flex-start;margin-bottom:12px}.zh-unk .zh-big{flex:none;font-size:clamp(3.2rem,12vw,4.6rem)}.zh-unk-body{flex:1;min-width:0}.zh-pyc{color:var(--accent)}
+.zh-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.zh-tile{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px}.zh-tile-n{font-size:1.8rem;font-weight:700;line-height:1.1}
+.zh-chart{margin:0;position:relative}.zh-chart-max{position:absolute;top:-2px;left:0}
+.zh-bars{display:grid;grid-template-columns:repeat(var(--n),1fr);gap:2px;height:120px;align-items:end;border-bottom:1px solid var(--border);padding-top:16px}
+.zh-bar{height:100%;display:flex;align-items:flex-end;cursor:default;outline:none}.zh-bar i{display:block;width:100%;background:var(--accent);border-radius:4px 4px 0 0;opacity:.85}
+.zh-bar.now i{opacity:1}.zh-bar:hover i,.zh-bar:focus i{opacity:1;box-shadow:0 0 0 2px var(--surface),0 0 0 3px var(--accent)}
+.zh-chart-x{display:flex;justify-content:space-between;margin-top:4px}
+.zh-chart-table summary{cursor:pointer;margin-top:6px}.zh-chart-table table{border-collapse:collapse;margin-top:4px}.zh-chart-table td{padding:2px 12px 2px 0}
+#zh-tip{position:fixed;z-index:90;background:var(--text);color:var(--bg);font-size:.8rem;padding:4px 8px;border-radius:6px;pointer-events:none;white-space:nowrap}#zh-tip[hidden]{display:none}
+.zh-srow{display:grid;grid-template-columns:minmax(0,2fr) 60px minmax(110px,1.2fr) minmax(0,1.3fr) 60px 50px;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--border);font-size:.9rem}
+.zh-shead{border-top:0}.zh-srow.d1 .zh-sname{padding-left:18px}.zh-srow.d2 .zh-sname{padding-left:36px}.zh-srow.d0{font-weight:700}
+.zh-sgroup>summary{list-style:none;cursor:pointer}.zh-sgroup>summary::-webkit-details-marker{display:none}
+.zh-sgroup>summary .zh-sname::before{content:'▸ ';color:var(--muted)}.zh-sgroup[open]>summary .zh-sname::before{content:'▾ '}
+.zh-slearn{display:flex;gap:8px;align-items:center}.zh-slearn .zh-lb{margin:0;flex:1 1 40px}
+@media (max-width:640px){.zh-srow{grid-template-columns:minmax(0,1.6fr) minmax(80px,1fr) 44px 40px;font-size:.85rem}.zh-srow>span:nth-child(2),.zh-srow>span:nth-child(4){display:none}}
 .zh-today{display:grid;grid-template-columns:1fr auto;gap:10px 20px;align-items:end;margin-bottom:14px}
 .zh-strip{display:flex;gap:3px;align-items:flex-end;height:46px}.zh-strip i{width:9px;border-radius:3px 3px 0 0;background:var(--accent-soft)}.zh-strip i.now{background:var(--accent)}
 .zh-todayset{grid-column:1/-1}.zh-todayset label{display:inline-flex;gap:6px;align-items:center;margin:6px 14px 0 0}
