@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>StudyHub</title>
 <!-- Add to Home Screen: opens full screen with its own icon -->
 <link rel="manifest" href="manifest.webmanifest">
@@ -113,7 +113,17 @@ html.dark .tex-pdf .pdfjs{background:#1b1d22}
 .search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--muted)}
 .icon-btn{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:8px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;line-height:1}
 .icon-btn:hover{background:var(--surface2)}
-.menu-btn{display:none}
+.menu-btn{display:none}.nav-scrim{display:none}
+/* flashcards on the phone: tap anywhere for the answer, the buttons in a bar at the bottom (like Anki) */
+.cards-play.front,.zh-play.front{cursor:pointer}
+@media (max-width:700px){
+  .cards-play,.zh-play{min-height:calc(100vh - 90px);padding-bottom:120px}
+  .cards-play .rate,.zh-play .rate{position:fixed;left:0;right:0;bottom:0;z-index:15;margin:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:8px;
+    padding:10px 12px calc(12px + env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--border);box-shadow:0 -4px 16px rgba(0,0,0,.06)}
+  .cards-play .rate .btn,.zh-play .rate .btn{min-width:0;padding:15px 4px;font-size:.92rem;justify-content:center;white-space:nowrap}
+  .cards-play .rate .kbd,.zh-play .rate .kbd,.cards-play > p.muted.small,.zh-keys{display:none}
+}
+@media (max-width:600px){.topbar a[href="#/manage"]{display:none}.topbar{gap:8px}}
 .hide-sm{display:inline}
 main.wide{max-width:none}
 .split{display:grid;grid-template-columns:minmax(0,var(--sl,1.25fr)) 14px minmax(0,var(--sr,1fr));gap:4px;align-items:start}
@@ -322,7 +332,11 @@ mark{background:rgba(250,204,21,.4);color:inherit;border-radius:3px;padding:0 2p
   .dd-menu{right:auto;left:0;max-width:86vw}
   .sidebar{position:fixed;left:0;top:0;bottom:0;width:min(86vw,330px);transform:translateX(-102%);transition:transform .22s;box-shadow:var(--shadow)}
   body.nav-open .sidebar{transform:none}
-  body.nav-open::after{content:"";position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:25}
+  /* a real element (not a ::after): a tap beside the open menu closes it, also on iPhone */
+  body.nav-open .nav-scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:25;cursor:pointer}
+  .sidebar{z-index:30}
+  body.nav-closing .nav-scrim{display:block;position:fixed;inset:0;z-index:25;background:transparent}
+  .topbar .spacer{display:none}.topbar .search{flex:1 1 auto;min-width:0;max-width:none}.search input{font-size:16px}
   .menu-btn{display:inline-flex}
   .side-btn{display:none}
   .hide-sm{display:none}
@@ -528,6 +542,7 @@ blockquote.note p{margin:.3em 0}
 <body>
 <div class="app">
   <aside class="sidebar" id="sidebar" aria-label="Courses"></aside>
+  <div class="nav-scrim" data-action="close-nav" aria-hidden="true"></div>
   <div>
     <div class="topbar">
       <button class="icon-btn menu-btn" data-action="toggle-nav" aria-label="Open menu">Menu</button>
@@ -3911,6 +3926,7 @@ function flipCard() {
   const f = $('.fcard'), r = $('.rate');
   if (!f || !r) return renderCards();
   f.classList.toggle('flipped', session.flipped); r.outerHTML = rateHtml();
+  const w = $('.deck-wrap'); if (w) w.classList.toggle('front', !session.flipped);
 }
 function renderCards() {
   const s = session;
@@ -3930,7 +3946,7 @@ function renderCards() {
     return;
   }
   const C = card.lec.course, st = cs(card.id);
-  main.innerHTML = `<div class="deck-wrap" style="--c:${esc(C.color)}">
+  main.innerHTML = `<div class="deck-wrap cards-play ${s.flipped ? '' : 'front'}" style="--c:${esc(C.color)}">
     <div class="crumbs"><a href="${esc(s.back)}">← ${esc(s.title)}</a></div>
     <div class="prog-row"><span class="small muted">${s.i + 1} / ${s.queue.length}</span><div class="bar"><i style="width:${Math.round(100 * s.i / s.queue.length)}%"></i></div>
       <span class="small muted" style="margin-right:6px">Review stage</span><span class="leitner" title="How well you know this card: more filled bars = longer until it is shown again">${[1,2,3,4,5].map(i => `<i class="${i <= st.b ? 'on' : ''}"></i>`).join('')}</span></div>
@@ -4272,6 +4288,7 @@ function handleClick(ev) {
     case 'ptab': panelTab = d.k; { const sp = $('#sidepane'), Lc = parseRoute().lec; if (sp && Lc) sp.innerHTML = panelHtml(Lc); } xNavUpdate(); xAnchorWatch(); break;
     case 'pdf': { const y = window.scrollY; pdfIdx = +d.k; render(); window.scrollTo(0, y); } break;
     case 'toggle-nav': document.body.classList.toggle('nav-open'); break;
+    case 'close-nav': document.body.classList.remove('nav-open'); break;
     case 'toggle-sidebar': toggleSidebar(); break;
     case 'toggle-top': toggleTop(); break;
     case 'tex-view': texApplyView(({ code: 1, both: 0.5, pdf: 0 })[d.v]); break;
@@ -4371,7 +4388,7 @@ function handleClick(ev) {
       if (!pool.length) { toast('No midterm questions yet'); break; }
       const score = q => { const t = qstat(q.id); return (t.last === 0 ? 0 : t.last === undefined || t.last === null ? 1 : 2) + Math.random() * 1.5; };
       startQuiz(shuffle(pool.slice().sort((a, b) => score(a) - score(b)).slice(0, 25)), 'Midterm drill - ' + C.name, location.hash); break; }
-    case 'flip': flipCard(); break;
+    case 'flip': if (Date.now() - tapFlipAt > 700) flipCard(); break;   // already flipped by the tap itself
     case 'skip': session.i++; session.flipped = false; renderCards(); break;
     case 'rate': {
       const card = session.queue[session.i], level = +d.level;
@@ -4554,6 +4571,24 @@ document.addEventListener('keydown', ev => {
     else if (session.mode === 'exam' && ev.key === 'ArrowLeft') { const b = $('[data-action="prevq"]'); if (b && !b.disabled) b.click(); }
   }
 });
+// a tap beside the open phone menu closes it. iPhones send no click for that tap, so this listens for the touch itself;
+// the see-through backdrop stays a moment so the same tap cannot open whatever is underneath
+document.addEventListener('pointerdown', ev => {
+  if (!ev.target.classList || !ev.target.classList.contains('nav-scrim')) return;
+  ev.preventDefault(); document.body.classList.add('nav-closing'); document.body.classList.remove('nav-open');
+  setTimeout(() => document.body.classList.remove('nav-closing'), 450);
+});
+/* Like Anki: a tap anywhere on a flashcard page shows the answer. Phones send no click for a tap on a plain area,
+   so this watches the touch itself (down and up close together); the click that may follow is then ignored. */
+let tapStart = null, tapFlipAt = 0;
+document.addEventListener('pointerdown', ev => { tapStart = ev.isPrimary ? { x: ev.clientX, y: ev.clientY, t: Date.now(), el: ev.target } : null; }, true);
+document.addEventListener('pointerup', ev => {
+  const s = tapStart; tapStart = null;
+  if (!s || Math.hypot(ev.clientX - s.x, ev.clientY - s.y) > 10 || Date.now() - s.t > 600 || !s.el.closest) return;
+  if (s.el.closest('a,button,input,textarea,select,label,summary,.zh-ch,#zh-sheet')) return;
+  if (s.el.closest('.cards-play.front') && session && session.kind === 'cards' && !session.flipped) { tapFlipAt = Date.now(); flipCard(); }
+  else if (s.el.closest('.zh-play.front') && typeof ZS !== 'undefined' && ZS && !ZS.flipped) { tapFlipAt = Date.now(); zhFlip(); }
+}, true);
 $('#search').addEventListener('input', ev => {
   const v = ev.target.value.trim();
   clearTimeout(window._st);
@@ -5602,6 +5637,11 @@ themeChanged();
   wrap('xAnchorKeep', () => xAnchorKeep, f => { xAnchorKeep = f; }, () => XANCHOR.el ? desc(XANCHOR.el) + ' was ' + Math.round(XANCHOR.top) + ' now ' + Math.round(XANCHOR.el.getBoundingClientRect().top) : 'no anchor');
   wrap('handleClick', () => handleClick, f => { handleClick = f; }, ev => { const a = ev.target.closest && ev.target.closest('[data-action]'); return a ? 'action=' + a.dataset.action : 'no action'; });
 })();
+if (window.STUDYHUB_SEED && (STUDYHUB_SEED.at || 0) > ls.get('studyhub.seed.v1', 0)) {   // GitHub Pages copy: your progress from the Mac at publish time
+  P = mergeP(P, STUDYHUB_SEED.progress || {}); U = mergeU(U, STUDYHUB_SEED.user || {});
+  ls.set(LS_PROGRESS, P); ls.set(LS_USER, U); ls.set('studyhub.seed.v1', STUDYHUB_SEED.at || 1);
+}
+if (matchMedia('(max-width:600px)').matches) $('#search').placeholder = 'Search…';
 buildCourses();
 if (migrateAliases()) { ls.set(LS_PROGRESS, P); ls.set(LS_USER, U); }
 if (!location.hash) location.hash = '#/';

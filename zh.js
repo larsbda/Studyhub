@@ -229,6 +229,12 @@ function zhStart(o, prev) {
     until: !!o.until, total: ids.length, learnedN: 0, rated: [] };
   zhSave(); go('#/zh/play'); return true;
 }
+// Next set: new cards from the same run. After a round of just the missed cards, go back to the run it came from
+// (its own pool is only those cards, so it would repeat them forever).
+function zhNext() {
+  const f = ZS.o.from;
+  if (f) zhStart(f.o, { seen: f.seen, setNo: ZS.setNo }); else zhStart(ZS.o, ZS);
+}
 function zhSave() { try { if (ZS) sessionStorage.setItem(LS_ZHS, JSON.stringify(ZS)); else sessionStorage.removeItem(LS_ZHS); } catch (e) { /* the set just won't survive a reload */ } }
 function zhRestore() { try { ZS = JSON.parse(sessionStorage.getItem(LS_ZHS) || 'null'); } catch (e) { ZS = null; } return !!ZS; }
 const zhHead = c => UI.zhScript === 'trad' && c.t ? c.t : c.s;
@@ -268,7 +274,7 @@ function zhPlay(keep) {
   const c = ZH.byId.get(s.ids[s.i]), r = zhP().cards[c.id], en = UI.zhDir === 'en';
   const front = en ? `<div class="zh-def big"><b>${esc(zhShort(c.def, 3))}</b></div>`
     : `<div class="zh-hw" lang="zh">${esc(zhHead(c))}</div>${UI.zhPinyin ? `<div class="zh-py">${esc(c.py)}</div>` : ''}`;
-  main.innerHTML = `<div class="deck-wrap zh-play">
+  main.innerHTML = `<div class="deck-wrap zh-play ${s.flipped ? '' : 'front'}">
     <div class="crumbs"><a href="#/zh">← Chinese</a> · Set ${s.setNo}${s.o.title ? ' · ' + esc(s.o.title) : ''}</div>
     <div class="prog-row">${s.until
       ? `<span class="small muted zh-tick"><b>${s.ids.length - s.i}</b> left · <b>${s.learnedN}</b>/${s.total} learned</span><div class="bar"><i style="width:${Math.round(100 * s.learnedN / s.total)}%"></i></div>`
@@ -410,19 +416,19 @@ function zhCatTree() {
     return `<div class="zh-cat${inherited ? ' inh' : ''}">${ch.length ? `<button class="zh-tw" data-zh="cat-open" data-p="${esc(p)}" aria-expanded="${isOpen}" aria-label="${isOpen ? 'Close' : 'Open'} ${esc(name)}">${isOpen ? '▾' : '▸'}</button>` : '<span class="zh-tw"></span>'}
       <input type="checkbox" id="${id}" data-zc="cat" value="${esc(p)}" ${on ? 'checked' : ''} ${inherited ? 'disabled title="Included: the folder above is ticked"' : ''} ${part ? 'data-part="1"' : ''}>
       ${ch.length ? `<button class="zh-cn" data-zh="cat-open" data-p="${esc(p)}">${esc(name)}</button>` : `<label class="zh-cn" for="${id}">${esc(name)}</label>`}
-      <span class="muted small">${counts.get(p)}${part && !isOpen ? ` · ${part} ticked inside` : ''}</span>${p === ZH.lastTick && sel.has(p) && p.includes('/') && zhCatUp(p, kids).length > 1 ? `<button class="zh-up" data-zh="cat-up" data-p="${esc(p)}" title="Tick ${esc(name)} and everything after it">↓ and up</button>` : ''}${zhLearnBar(learned.get(p) || 0, counts.get(p))}</div>
+      <span class="muted small">${counts.get(p)}${part && !isOpen ? ` · ${part} ticked inside` : ''}</span>${p === ZH.lastTick && sel.has(p) && p.includes('/') && zhCatUp(p, kids).length > 1 ? `<button class="zh-up" data-zh="cat-up" data-p="${esc(p)}" title="Tick ${esc(name)} and everything before it">↑ and up</button>` : ''}${zhLearnBar(learned.get(p) || 0, counts.get(p))}</div>
       ${ch.length ? `<div class="zh-catk${isOpen ? ' open' : ''}">${ch.map(x => node(x, on)).join('')}</div>` : ''}`;
   };
   return (kids.get('') || []).map(x => node(x, false)).join('');
 }
 const zhLearnBar = (l, n) => `<span class="zh-lb" title="${l} of ${n} learned"><i style="width:${Math.round(100 * l / n)}%"></i></span><span class="small muted zh-lbn">${l === n ? '✓' : Math.round(100 * l / n) + '%'}</span>`;
-// "and up": this folder, the folders after it, and the folders after each folder above it (inside the same top folder).
-// Set 30 in Level 5 -> Set 30 ... last set of Level 5, Level 6, Level 7-9.
+// "and up": this folder and everything before it, at every level inside the same top folder.
+// Set 10 in Level 5 -> Set 01 ... Set 10 of Level 5, and Levels 1-4.
 function zhCatUp(p, kids) {
   const out = []; let cur = p;
   while (cur.includes('/')) {
     const par = cur.slice(0, cur.lastIndexOf('/')), sib = kids.get(par) || [];
-    out.push(...sib.slice(sib.indexOf(cur) + (cur === p ? 0 : 1)));
+    out.push(...sib.slice(0, sib.indexOf(cur) + (cur === p ? 1 : 0)));
     cur = par;
   }
   return out;
@@ -705,14 +711,15 @@ if (window.speechSynthesis) try { speechSynthesis.getVoices(); } catch (e) { /* 
 /* ---------- events (own listeners: nothing here goes through the course handlers) ---------- */
 function zhRedraw() { const y = scrollY; viewZh(parseRoute()); window.scrollTo(0, y); }
 document.addEventListener('click', ev => {
-  const el = ev.target.closest && ev.target.closest('[data-zh]'); if (!el) return;
+  const el = ev.target.closest && ev.target.closest('[data-zh]');
+  if (!el) return;
   const a = el.dataset.zh, d = el.dataset;
   switch (a) {
-    case 'flip': zhFlip(); break;
+    case 'flip': if (typeof tapFlipAt === 'undefined' || Date.now() - tapFlipAt > 700) zhFlip(); break;   // a tap already flipped it
     case 'rate': zhRateCur(+d.l); break;
     case 'start': zhStart(zhOpts()); break;
-    case 'next-set': zhStart(ZS.o, ZS); break;
-    case 'redo-missed': zhStart({ ids: ZS.missed.slice(), order: 'random', title: 'missed' }); break;
+    case 'next-set': zhNext(); break;
+    case 'redo-missed': zhStart({ ids: ZS.missed.slice(), order: 'random', title: 'missed', from: ZS.o.from || { o: ZS.o, seen: ZS.seen, setNo: ZS.setNo } }); break;
     case 'cats-clear': UI.zhCats = []; saveUI(); zhTreeRedraw(); break;
     case 'cat-up': { const add = zhCatUp(d.p, zhCatData().kids), covered = x => add.some(a => x === a || x.startsWith(a + '/'));
       UI.zhCats = (UI.zhCats || []).filter(x => !covered(x)).concat(add); ZH.lastTick = null; saveUI(); zhTreeRedraw(); toast(`Ticked ${zhCatName(d.p)} and up (${add.length} folders)`); break; }
@@ -784,7 +791,7 @@ document.addEventListener('keydown', ev => {
   if (!ZS || !/^#\/zh\/play/.test(location.hash)) return;
   const tag = (ev.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select' || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-  if (ZS.i >= ZS.ids.length) { if (ev.key === 'Enter') { ev.preventDefault(); zhStart(ZS.o, ZS); } return; }
+  if (ZS.i >= ZS.ids.length) { if (ev.key === 'Enter') { ev.preventDefault(); zhNext(); } return; }
   if (ev.key === ' ' || ev.key === 'Enter') { ev.preventDefault(); zhFlip(); }
   else if (ZS.flipped && /^[1-4]$/.test(ev.key)) { ev.preventDefault(); zhRateCur(+ev.key - 1); }
   else if (ev.key.toLowerCase() === 's') { const c = ZH.byId.get(ZS.ids[ZS.i]); if (c) zhSpeak(c.s); }
@@ -825,7 +832,7 @@ window.addEventListener('hashchange', () => zhSheetClose());
 .zh-more summary{cursor:pointer;color:var(--muted);font-size:.85rem;margin:4px 0}
 .zh-gl{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:grid;gap:4px}.zh-gl1{display:flex;gap:10px;align-items:baseline;color:var(--muted);font-size:.92rem}.zh-gl1 .zh-ch{font-size:1.2rem;color:var(--text)}
 .zh-afoot{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
-.zh-play .rate{position:sticky;bottom:0;z-index:5;padding:10px 0;background:linear-gradient(transparent,var(--bg) 30%)}
+@media (min-width:701px){.zh-play .rate{position:sticky;bottom:0;z-index:5;padding:10px 0;background:linear-gradient(transparent,var(--bg) 30%)}}
 .zh-keys{text-align:center;margin-top:12px}
 .zh-missd{text-align:left;margin:14px auto 0;max-width:640px;border:1px solid var(--border);border-radius:10px;padding:8px 12px}.zh-missd summary{cursor:pointer;font-weight:600}
 .zh-misslist{display:grid;margin-top:8px}.zh-mrow{display:grid;grid-template-columns:auto auto 1fr;gap:10px;align-items:baseline;text-align:left;border:0;border-top:1px solid var(--border);background:none;color:inherit;font:inherit;padding:7px 2px;cursor:pointer}
