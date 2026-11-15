@@ -245,10 +245,19 @@ function zhMatches(c, o, gc) {
   if (f === 'unk') return [...c.s].some(zhUnk);
   return true;
 }
+// answered right today but held just below the line: learned after one more right answer on another day
+function zhWaiting(c) { const r = zhRec(c); return !!(r && r.cap && r.ld === today() && !zhLearned(c)); }
+// what a repeat-until-learned choice still has to do: { left, learned, waiting } over the matching cards
+function zhUntilCounts(o) {
+  const all = zhPool(Object.assign({}, o, { until: false }));
+  let learned = 0, waiting = 0;
+  for (const c of all) { if (zhLearned(c)) learned++; else if (zhWaiting(c)) waiting++; }
+  return { total: all.length, learned, waiting, left: all.length - learned - waiting };
+}
 function zhPool(o) {
   const gc = zhGroupChars();
   let cs = o.ids ? o.ids.map(id => ZH.byId.get(id)).filter(Boolean) : ZH.cards.filter(c => zhMatches(c, o, gc));
-  if (o.until) cs = cs.filter(c => !zhLearned(c));      // repeat-until-learned sets only take cards not learned yet
+  if (o.until) cs = cs.filter(c => !zhLearned(c) && !zhWaiting(c));   // repeat-until-learned: only cards still to do today
   const ord = o.order || 'weak';
   if (ord === 'random') return shuffle(cs);
   if (ord === 'keep') return cs;
@@ -290,7 +299,13 @@ function zhStart(o, prev) {
   const pool = zhPool(o), seen = new Set(prev && !o.until ? prev.seen : []);
   let rest = pool.filter(c => !seen.has(c.id)), wrapped = false;
   if (!rest.length && pool.length) { rest = pool; seen.clear(); wrapped = true; }
-  if (!rest.length) { toast('No cards match these choices'); return false; }
+  if (!rest.length) {
+    if (o.until) {
+      const u = zhUntilCounts(o);
+      toast(u.total ? `All ${u.total} card${u.total === 1 ? '' : 's'} here ${u.total === 1 ? 'is' : 'are'} learned${u.waiting ? ` (${u.waiting} waiting for tomorrow - a right answer then makes ${u.waiting === 1 ? 'it' : 'them'} learned)` : ''}` : 'No cards match these choices');
+    } else toast('No cards match these choices');
+    return false;
+  }
   const ids = rest.slice(0, zhBatch()).map(c => c.id);
   ids.forEach(id => seen.add(id));
   ZS = { o, ids, i: 0, flipped: false, good: 0, again: 0, req: [], missed: [], seen: [...seen], setNo: prev ? prev.setNo + 1 : 1, pool: pool.length, wrapped,
@@ -456,7 +471,7 @@ function zhEnd() {
       <button class="btn primary" data-zh="next-set">Next set of ${zhBatch()} <span class="kbd" style="background:transparent;color:inherit">Enter</span></button>
       ${miss.length ? `<button class="btn" data-zh="redo-missed">Again: the ${miss.length} I missed</button>` : ''}
       <a class="btn ghost" href="#/zh">Back</a></div>
-    <p class="small muted" style="margin-top:10px">${s.o.today ? (() => { const t = zhToday(); return t.cards.length ? `${t.rev} review${t.rev === 1 ? '' : 's'} and ${t.fresh} new word${t.fresh === 1 ? '' : 's'} left for today.` : 'Nothing more for today.'; })() : s.until ? (() => { const n = zhPool(s.o).length; return n ? `${n} matching card${n === 1 ? '' : 's'} not learned yet.` : 'Every matching card is learned.'; })()
+    <p class="small muted" style="margin-top:10px">${s.o.today ? (() => { const t = zhToday(); return t.cards.length ? `${t.rev} review${t.rev === 1 ? '' : 's'} and ${t.fresh} new word${t.fresh === 1 ? '' : 's'} left for today.` : 'Nothing more for today.'; })() : s.until ? (() => { const n = zhPool(s.o).length; return n ? `${n} matching card${n === 1 ? '' : 's'} still to learn today.` : (() => { const u = zhUntilCounts(s.o); return `All ${u.total} matching cards are learned${u.waiting ? ` or waiting for tomorrow (${u.waiting})` : ''}.`; })(); })()
       : left ? `${left} matching card${left === 1 ? '' : 's'} not yet in this run.` : 'Every matching card has been in a set; the next set starts over.'}</p></div>`;
 }
 
@@ -766,7 +781,12 @@ function zhTreeRedraw() {
 }
 function zhCountLine() {
   const n = zhPool(zhOpts()).length;
-  return `${n} card${n === 1 ? '' : 's'}${UI.zhUntil ? ' not learned yet' : ''} match${n === 1 ? 'es' : ''}${n ? ` · ${Math.ceil(n / zhBatch())} set${Math.ceil(n / zhBatch()) === 1 ? '' : 's'} of ${zhBatch()}` : ''}`;
+  if (UI.zhUntil) {
+    const u = zhUntilCounts(zhOpts());
+    if (!u.left) return u.total ? `All ${u.total} learned${u.waiting ? ` · ${u.waiting} waiting for tomorrow` : ''}` : 'No cards match';
+    return `${u.left} of ${u.total} still to learn${u.waiting ? ` · ${u.waiting} waiting for tomorrow` : ''} · ${Math.ceil(u.left / zhBatch())} set${Math.ceil(u.left / zhBatch()) === 1 ? '' : 's'} of ${zhBatch()}`;
+  }
+  return `${n} card${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''}${n ? ` · ${Math.ceil(n / zhBatch())} set${Math.ceil(n / zhBatch()) === 1 ? '' : 's'} of ${zhBatch()}` : ''}`;
 }
 function zhImportHtml() {
   return zhServed()
