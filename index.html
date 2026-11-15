@@ -114,6 +114,7 @@ html.dark .tex-pdf .pdfjs{background:#1b1d22}
 .icon-btn{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:8px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;line-height:1}
 .icon-btn:hover{background:var(--surface2)}
 .menu-btn{display:none}.nav-scrim{display:none}
+.gh-status{margin:18px 12px 8px;line-height:1.4}
 /* flashcards on the phone: tap anywhere for the answer, the buttons in a bar at the bottom (like Anki) */
 .cards-play.front,.zh-play.front{cursor:pointer}
 @media (max-width:700px){
@@ -600,9 +601,14 @@ blockquote.note p{margin:.3em 0}
     return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: ITER, hash: 'SHA-256' }, base, 256));
   }
   async function open(raw) {
-    const d = await getBlob(), salt = d.slice(5, 21), iv = d.slice(21, 33), key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+    const d = await getBlob(), salt = d.slice(5, 21), iv = d.slice(21, 33), key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
     const text = new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, d.slice(33)));
     // slides: p/<name>.enc = iv(12) | AES-GCM, same key; the app asks for one when a lecture's slides are shown
+    // the same key encrypts the synced progress (two-way sync through the private GitHub repo)
+    window.STUDYHUB_CRYPT = {
+      enc: async b => { const v = crypto.getRandomValues(new Uint8Array(12)), ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: v }, key, b)), o = new Uint8Array(12 + ct.length); o.set(v); o.set(ct, 12); return o; },
+      dec: async b => new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.slice(0, 12) }, key, b.slice(12)))
+    };
     window.STUDYHUB_OPENPDF = async name => {
       const r = await fetch(name); if (!r.ok) throw new Error('slides not found (' + r.status + ')');
       const b = new Uint8Array(await r.arrayBuffer());
@@ -1450,7 +1456,7 @@ const ls = {
 };
 let P = Object.assign({ cards: {}, qs: {}, days: {}, theme: '', steps: {}, last: null, mid: {} }, ls.get(LS_PROGRESS, {}));
 let U = Object.assign({ courses: [], lectures: [], fixes: {} }, ls.get(LS_USER, {}));
-const saveP = () => { ls.set(LS_PROGRESS, P); syncSoon(); };
+const saveP = () => { ls.set(LS_PROGRESS, P); syncSoon(); ghSoon(); };
 /* layout choices (course menu hidden, slides/notes split) stay on this device - never synced */
 const LS_UI = 'studyhub.ui.v1', SPLIT_DEFAULT = 1.25 / 2.25;
 const UI = Object.assign({ side: false, split: SPLIT_DEFAULT, batch: 20, studyMinutes: 20, studyCourse: 'all', studyTopics: null, studyTopicCourse: 'all', examSource: 'mixed' }, ls.get(LS_UI, {}));
@@ -1520,6 +1526,93 @@ function mergeU(a, b) {
   const courses = new Map(); b.courses.forEach(c => courses.set(c.id, c)); a.courses.forEach(c => courses.set(c.id, c));
   const fixes = Object.assign({}, b.fixes); for (const k in a.fixes || {}) if (!fixes[k] || (a.fixes[k].t || 0) >= (fixes[k].t || 0)) fixes[k] = a.fixes[k];
   return { courses: [...courses.values()], lectures: [...lec.values()].filter(l => !(del[l.uid] >= (l.t || 0))), deleted: del, fixes };
+}
+/* ===================================================================
+   Two-way sync with the GitHub Pages copy (set up by engine/publish.py). One encrypted file, progress.enc, in a
+   private GitHub repo that the phone app and StudyHub on the Mac both read and write. Every write merges first
+   (newest review per item wins); the repo keeps a single commit, so it stays small. If two devices write at the same
+   moment, the next sync on either one puts back what was overwritten, because each device keeps all its progress.
+   =================================================================== */
+const GH = { sha: null, base: null, busy: false, again: false, timer: 0, at: 0, err: '', drawn: false };
+const ghCfg = () => window.STUDYHUB_GHSYNC && window.STUDYHUB_GHSYNC.token ? window.STUDYHUB_GHSYNC : null;
+async function ghApi(path, opts = {}) {
+  const c = ghCfg();
+  const r = await fetch(`https://api.github.com/repos/${c.repo}/${path}`, Object.assign({ cache: 'no-store' }, opts, {
+    headers: Object.assign({ Authorization: 'Bearer ' + c.token, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' }, opts.headers || {}) }));
+  if (!r.ok) { const e = new Error(r.status === 401 ? 'the GitHub token is not valid any more' : r.status === 404 ? 'the sync repo was not found' : 'GitHub ' + r.status); e.status = r.status; throw e; }
+  return r.json();
+}
+// AES-GCM with the site key: the password gate provides it on the phone, sync/pages-sync.js on the Mac
+async function ghCrypt() {
+  if (window.STUDYHUB_CRYPT) return window.STUDYHUB_CRYPT;
+  const raw = Uint8Array.from(atob(ghCfg().key || ''), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+  return (window.STUDYHUB_CRYPT = {
+    enc: async b => { const iv = crypto.getRandomValues(new Uint8Array(12)), ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, b)), o = new Uint8Array(12 + ct.length); o.set(iv); o.set(ct, 12); return o; },
+    dec: async b => new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.slice(0, 12) }, key, b.slice(12)))
+  });
+}
+const ghZip = async (b, how) => window.CompressionStream ? new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(how === 'pack' ? new CompressionStream('gzip') : new DecompressionStream('gzip'))).arrayBuffer()) : null;
+const ghB64 = u => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+const ghUnB64 = s => Uint8Array.from(atob(String(s).replace(/\s/g, '')), c => c.charCodeAt(0));
+// the same data always gives the same text, whatever order the keys were added in
+const ghStable = x => JSON.stringify(x, (k, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v).sort().reduce((o, key) => { o[key] = v[key]; return o; }, {}) : v);
+async function ghPull() {
+  const ref = await ghApi('git/ref/heads/main'), sha = ref.object.sha;
+  if (sha === GH.sha) return false;
+  const commit = await ghApi('git/commits/' + sha), tree = await ghApi('git/trees/' + commit.tree.sha);
+  const ent = (tree.tree || []).find(e => e.path === ghCfg().path);
+  GH.sha = sha; GH.base = null;
+  if (!ent) return false;
+  let R;
+  try {
+    const d = await (await ghCrypt()).dec(ghUnB64((await ghApi('git/blobs/' + ent.sha)).content));
+    R = JSON.parse(new TextDecoder().decode(d[0] === 1 ? await ghZip(d.slice(1), 'unpack') : d.slice(1)));
+  } catch (e) { return false; }           // written with another password: it is replaced by this device's progress
+  GH.base = ghStable([R.progress || {}, R.user || {}]);
+  const before = ghStable([sharedP(P), U]);
+  P = mergeP(P, R.progress || {}); U = mergeU(U, R.user || {});
+  if (ghStable([sharedP(P), U]) === before) return false;
+  ls.set(LS_PROGRESS, P); ls.set(LS_USER, U); syncSoon();
+  return true;
+}
+async function ghPush() {
+  const text = JSON.stringify({ at: Date.now(), progress: sharedP(P), user: U }), raw = new TextEncoder().encode(text), gz = await ghZip(raw, 'pack');
+  const body = new Uint8Array(1 + (gz || raw).length); body[0] = gz ? 1 : 0; body.set(gz || raw, 1);
+  const blob = await ghApi('git/blobs', { method: 'POST', body: JSON.stringify({ content: ghB64(await (await ghCrypt()).enc(body)), encoding: 'base64' }) });
+  const tree = await ghApi('git/trees', { method: 'POST', body: JSON.stringify({ tree: [{ path: ghCfg().path, mode: '100644', type: 'blob', sha: blob.sha }] }) });
+  const commit = await ghApi('git/commits', { method: 'POST', body: JSON.stringify({ message: 'StudyHub progress', tree: tree.sha, parents: [] }) });
+  await ghApi('git/refs/heads/main', { method: 'PATCH', body: JSON.stringify({ sha: commit.sha, force: true }) });
+  GH.sha = commit.sha; GH.base = ghStable([sharedP(P), U]);
+}
+async function ghSync() {
+  if (!ghCfg()) return;
+  if (GH.busy) { GH.again = true; return; }
+  GH.busy = true;
+  try {
+    const changed = await ghPull();
+    if (ghStable([sharedP(P), U]) !== GH.base) await ghPush();
+    GH.at = Date.now(); GH.err = '';
+    if (changed) { buildCourses(); if (!GH.drawn && !session && !/^#\/(play|zh\/play)/.test(location.hash)) render(); }
+    GH.drawn = true;
+  } catch (e) { GH.err = e.message || String(e); }
+  finally { GH.busy = false; ghStatus(); if (GH.again) { GH.again = false; ghSoon(); } }
+}
+function ghSoon() { if (!ghCfg()) return; clearTimeout(GH.timer); GH.timer = setTimeout(ghSync, 8000); }
+function ghStatusText() {
+  if (!ghCfg()) return '';
+  if (GH.err) return `<span title="${esc(GH.err)}">⚠ Sync with GitHub failed: ${esc(GH.err)}</span>`;
+  if (!GH.at) return 'Syncing…';
+  const m = Math.round((Date.now() - GH.at) / 60000);
+  return `Synced ${m < 1 ? 'just now' : m + ' min ago'}`;
+}
+function ghStatus() { const el = $('#gh-status'); if (el) el.innerHTML = ghStatusText(); }
+function ghStart() {
+  if (!ghCfg()) return;
+  ghSync();
+  setInterval(() => { if (document.visibilityState === 'visible') ghSync(); else ghStatus(); }, 60000);
+  // switching away from the app (phone home screen, another tab) saves right away; coming back fetches
+  document.addEventListener('visibilitychange', () => ghSync());
 }
 async function syncNow(first) {
   if (SYNC.busy) { SYNC.again = true; return; }
@@ -2087,6 +2180,7 @@ function render() {
   document.body.classList.toggle('static-site', !!window.STUDYHUB_STATIC);   // GitHub Pages copy: no server on the Mac behind it
   if (session && session.noRecord && r.name !== 'play') session = null;
   renderSidebar(r);
+  if (ghCfg()) $('#sidebar').insertAdjacentHTML('beforeend', `<div id="gh-status" class="gh-status small muted">${ghStatusText()}</div>`);
   document.body.classList.remove('nav-open');
   window.scrollTo({ top: 0, behavior: 'instant' });
   docLeave();
@@ -5647,6 +5741,7 @@ if (migrateAliases()) { ls.set(LS_PROGRESS, P); ls.set(LS_USER, U); }
 if (!location.hash) location.hash = '#/';
 render();
 syncNow(true);
+ghStart();
 setInterval(() => { if (SYNC.on && document.visibilityState === 'visible') syncNow(); }, 30000);
 document.addEventListener('visibilitychange', () => { if (SYNC.on && document.visibilityState === 'visible') syncNow(); });
 </script>
