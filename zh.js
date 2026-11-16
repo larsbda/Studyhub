@@ -1240,7 +1240,7 @@ window.addEventListener('load', () => setTimeout(() => { if (zhServed() && !wind
   s.textContent = `
 [lang=zh],.zh-hw,.zh-sbig,.zh-big,.zh-ch{font-family:"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",sans-serif}
 .zh-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
-.zh-form{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}.zh-form label{display:inline-flex;gap:6px;align-items:center}.zh-form [hidden]{display:none}.zh-form label{max-width:100%;flex-wrap:wrap}.zh-form select{max-width:100%;min-width:0}
+.zh-form{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}.zh-form label{display:inline-flex;gap:6px;align-items:center}.zh-form [hidden]{display:none}.zh-form label{max-width:100%;flex-wrap:wrap}.zh-form select{max-width:100%;min-width:0;background-color:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 8px}
 .zh-in{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;padding:6px 8px;font:inherit}
 .zh-tree{max-height:440px;overflow:auto;margin-top:8px}.zh-cat{display:flex;align-items:center;gap:6px;padding:3px 0}
 .zh-tw{width:24px;height:24px;flex:none;border:0;background:none;color:var(--text);cursor:pointer;padding:0;font-size:1rem;border-radius:6px}.zh-tw:hover{background:var(--surface2)}
