@@ -2624,7 +2624,15 @@ function viewHome() {
       <li>Preview the lecture highlights so the details have a place to fit.</li><li>Read a notes section, then use Hide &amp; explain to put it into your own words.</li><li>Answer flashcards and questions from memory before looking at the answer.</li><li>Use feedback to revisit the relevant notes, then try another question.</li><li>Return for a later check. An immediate correct retry and a correct answer days later tell you different things.</li></ol></details>`;
 }
 
-function courseCrumbs(r) { return `<div class="crumbs"><a href="#/">Dashboard</a> › <a href="#/c/${esc(r.course.id)}">${esc(r.course.name)}</a>${r.lec ? ' › ' + esc(r.lec.title) : ''}</div>`; }
+function courseCrumbs(r) { return `<div class="crumbs"><a href="#/">Dashboard</a> › <a href="#/c/${esc(r.course.id)}">${esc(r.course.name)}</a>${r.lec ? ' › ' + esc(r.lec.title) : ''}${r.name === 'docs' ? docCrumbs(r) : ''}</div>`; }
+// inside a document the path continues: › Documents (a link back to the folder) › the document
+function docCrumbs(r) {
+  const D = `#/docs/${esc(r.course.id)}`, name = r.pdf || r.slides || r.present || r.doc || r.tex || '';
+  if (!name) return ' › Documents';
+  const n = esc(name);
+  if (r.present) return ` › <a href="${D}">Documents</a> › <a href="${D}/slides/${encodeURIComponent(name)}">${n}</a> › Presenter view`;
+  return ` › <a href="${D}">Documents</a> › ${n}`;
+}
 
 let midEdit = false;
 const dOpen = {};   // which course-page dropdowns are open (kept across re-renders)
