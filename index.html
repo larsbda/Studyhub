@@ -2457,6 +2457,39 @@ function studyTopicPicker(priorities,plan) {
     <div class="row" style="margin-top:8px"><span class="small muted">${UI.studyTopics===null||UI.studyTopics===undefined?'Recommended selection':pluralize((plan.topics||[]).length,'topic')+' selected'}</span><span class="spacer"></span><button class="btn sm ghost" data-action="plan-recommend">Use recommendation</button></div>
   </fieldset>`;
 }
+/* New files from Canvas (engine/canvas_sync.py, run by serve.py every 3 hours). The card lists new slides that no lecture
+   uses yet, with a prompt to copy into Claude Code; it disappears once a lecture is made from the file, or when hidden. */
+let CANVAS = null, canvasAsked = false;
+function canvasLoad(force) {
+  if (!onServer() || window.STUDYHUB_STATIC || (canvasAsked && !force)) return;
+  canvasAsked = true;
+  fetch('/canvas-api/files', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => { if (j) { CANVAS = j; canvasRedraw(); } }).catch(() => {});
+}
+function canvasRedraw() { const el = document.getElementById('cv-panel'); if (el) el.outerHTML = canvasPanel(); }
+function canvasPending() {
+  if (!CANVAS || !CANVAS.on) return { lec: [], other: [] };
+  const hide = UI.cvHide || [], used = new Set(allLectures().flatMap(L => (L.pdfs || []).map(p => String(p).split('/').pop())));
+  const live = (CANVAS.files || []).filter(f => !hide.includes(f.path));
+  return { lec: live.filter(f => f.lecture && !used.has(f.name)), other: live.filter(f => !f.lecture && Date.now() - f.at < 14 * 864e5) };
+}
+function canvasPanel() {
+  canvasLoad();
+  const { lec, other } = canvasPending();
+  if (!lec.length && !other.length) return '<div id="cv-panel"></div>';
+  const cname = id => (getCourse(id) || { name: id }).name, day = t => t ? new Date(t).toLocaleDateString([], { day: 'numeric', month: 'short' }) : '';
+  const row = (f, prompt) => `<div class="lec-row" style="flex-wrap:wrap"><span class="code">${f.lecture ? 'NEW' : 'FILE'}</span><div style="flex:1 1 180px;min-width:0"><b style="overflow-wrap:anywhere">${esc(f.name)}</b><div class="small muted">${esc(cname(f.course))} · on Canvas ${esc(day(f.canvas))}</div></div>
+      <span class="row" style="gap:6px;flex-wrap:wrap"><a class="btn sm" href="../${f.path.split('/').map(encodeURIComponent).join('/')}" target="_blank" rel="noopener">Open</a>${prompt ? `<button class="btn sm primary" data-action="cv-prompt" data-p="${esc(f.path)}" data-c="${esc(f.course)}">Copy prompt</button>` : ''}<button class="btn sm ghost" data-action="cv-hide" data-p="${esc(f.path)}" title="Hide this file here">Hide</button></span></div>`;
+  return `<div class="card" id="cv-panel" style="margin-bottom:16px"><h3 style="margin:0">New from Canvas</h3>
+    ${lec.length ? `<p class="small muted" style="margin:4px 0 8px">New slides without a lecture yet. <b>Copy prompt</b> and paste it into Claude Code to get notes, flashcards and a quiz.</p>${lec.map(f => row(f, true)).join('')}` : ''}
+    ${other.length ? `<p class="small muted" style="margin:${lec.length ? '12px' : '4px'} 0 8px">Other new course files (saved in the course folder under Canvas).</p>${other.map(f => row(f, false)).join('')}` : ''}
+    <div class="small muted" style="margin-top:8px">Checked ${CANVAS.checked ? esc(new Date(CANVAS.checked).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'never'} · every 3 hours while StudyHub runs · <a href="#" data-action="cv-check">Check now</a></div></div>`;
+}
+async function canvasCopy(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall back below */ }
+  const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
+  let ok = false; try { ok = document.execCommand('copy'); } catch (e) { /* ignore */ } ta.remove(); return ok;
+}
+
 function nextSessionPanel() {
   const active = studyPlan && studyPlan.i < studyPlan.steps.length;
   const course=selectedStudyCourse();
@@ -2602,7 +2635,7 @@ function viewHome() {
   const priorities = studyPriorities();
   main.innerHTML = `
     <div class="hero"><div><h1>Study dashboard</h1><div class="muted">Work on one or two sections from a lecture, guided by your previous results.</div></div></div>
-    ${dailyPanel()}${nextSessionPanel()}
+    ${canvasPanel()}${dailyPanel()}${nextSessionPanel()}
     <h2>Your progress</h2>${progressBlock(lecs)}
     ${priorities.length ? `<div class="card" style="margin-bottom:22px"><h3 style="margin:0">Priority topics</h3><p class="small muted" style="margin:4px 0">Based on missed answers, difficult flashcards and sections due to explain. Topic matches are suggestions.</p><div class="rv-list">${priorities.slice(0, 3).map(it => reviewRow(it.L.course, it)).join('')}</div></div>` : ''}
     ${(() => { const l = P.last && getCourse(P.last.c) && getCourse(P.last.c).lectures.find(x => x.slug === P.last.l); return l ? `<div class="card" style="margin-bottom:16px"><div class="row"><div><div class="small muted">Continue where you left off</div><b>${esc(l.title)}</b></div><span class="spacer"></span><a class="btn" href="#/c/${esc(P.last.c)}/${esc(l.slug)}/${esc(P.last.t)}">Continue →</a></div></div>` : ''; })()}
@@ -4463,6 +4496,16 @@ function handleClick(ev) {
     case 'tex-line': if (TEX.cm) { const ln = Math.max(0, +d.l - 1); TEX.cm.setCursor({ line: ln, ch: 0 }); TEX.cm.focus(); TEX.cm.scrollIntoView({ line: ln, ch: 0 }, 120); } break;
     case 'cards-more': { const src = session && session.src, back = session ? session.back : '#/'; if (src) reviewDue(src, back); break; }
     case 'study-due': { reviewDue(d.id, location.hash || '#/'); break; }
+    case 'cv-hide': UI.cvHide = [...(UI.cvHide || []), d.p].slice(-200); saveUI(); canvasRedraw(); break;
+    case 'cv-prompt': {
+      const C = getCourse(d.c) || { name: d.c };
+      canvasCopy(`Use the lecture-notes skill to make a new StudyHub lecture for the course "${C.name}" (${d.c}) from the slides "${d.p}" (path from the Utveksling folder). Same structure as the other lectures in that course; then run build.py.`)
+        .then(ok => toast(ok ? 'Prompt copied - paste it into Claude Code' : 'Could not copy'));
+      break; }
+    case 'cv-check': {
+      ev.preventDefault(); toast('Checking Canvas…');
+      fetch('/canvas-api/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.json()).then(j => { CANVAS = Object.assign(CANVAS || {}, j, { on: true }); canvasRedraw(); toast(j.msg || 'Checked'); }).catch(() => toast('Canvas check failed'));
+      break; }
     case 'plan-duration': UI.studyMinutes = +d.minutes; saveUI(); viewHome(); break;
     case 'daily-start': startDailyReview(); break;
     case 'exam-style': { const C = getCourse(d.id), pool = examStyleQs(C), rank = q => { const x = qstat(q.id); return x.last == null ? 0 : x.last === 0 ? 1 : (x.due || 0) <= Date.now() ? 2 : 3; };
