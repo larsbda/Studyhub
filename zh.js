@@ -98,7 +98,13 @@ const zhIsPleco = def => ZH_POS.test(def || '') || /^1\s/.test(def || '');
 function zhSenseSplit(t) {            // "1 a 2 b 3 c" -> [a, b, c]; numbers must come in order
   t = t.trim(); if (!/^1\s/.test(t)) return [t];
   const out = []; let cur = t.slice(2), k = 2;
-  for (;;) { const m = cur.search(new RegExp('\\s' + k + '\\s')); if (m < 0) { out.push(cur); break; } out.push(cur.slice(0, m)); cur = cur.slice(m + String(k).length + 2); k++; }
+  // some Pleco exports glue the number to the word before it ("1 hot2 heat3 popular"): use that only when no spaced number follows
+  for (;;) {
+    let m = cur.search(new RegExp('\\s' + k + '\\s')), skip = String(k).length + 2;
+    if (m < 0) { m = cur.search(new RegExp('(?<=[^\\s\\d])' + k + '\\s(?=[\\p{L}(（])', 'u')); skip = String(k).length + 1; }
+    if (m < 0) { out.push(cur); break; }
+    out.push(cur.slice(0, m)); cur = cur.slice(m + skip); k++;
+  }
   return out.map(x => x.trim()).filter(Boolean);
 }
 function zhSense(t) {
