@@ -173,12 +173,24 @@ function zhWeak(c) {
   if (r && r.lkT && Date.now() - r.lkT < 14 * DAY) w = Math.min(1, (w === null ? 0.4 : w) + 0.15);
   return w;
 }
-/* Learned score, like Pleco's: it starts from the Pleco score (0 for a card never reviewed there).
-   Good +100, Easy +150, Hard +25; Don't know halves it and always drops it below the line. Learned = score >= UI.zhLearnAt (300). */
+/* Learned score: Good +100, Easy +150; Hard +25 but it counts as a miss, so it never leaves a card learned;
+   Don't know halves it and always drops it below the line. Learned = score >= UI.zhLearnAt (300).
+   Pleco's score is on another scale (it multiplies; a failed card sits around 400, and only cards above ~1200 are
+   answered right >90% of the time), so it is converted: 400 or less -> 0, 1200 -> the line, log scale between. */
 const zhLearnAt = () => Math.max(50, Math.round(+UI.zhLearnAt || 300));
-function zhScore(c) { const r = zhP().cards[c.id]; return r && r.sc != null ? r.sc : c.pl ? Math.max(0, c.pl.score || 0) : 0; }
+const zhPlBase = c => { const s = c.pl ? c.pl.score || 0 : 0; return s <= 400 ? 0 : Math.round(zhLearnAt() * Math.log(s / 400) / Math.log(3)); };
+function zhScore(c) {
+  const r = zhP().cards[c.id], b = zhPlBase(c);
+  if (!r || r.sc == null) return b;
+  if (r.v === 2) return r.sc;
+  // a score saved before the conversion was built on Pleco's raw score: rebase it, and a card whose last answer was a miss is not learned
+  const raw = c.pl ? Math.max(0, c.pl.score || 0) : 0;
+  let sc = Math.max(0, r.sc >= raw ? r.sc - raw + b : Math.min(r.sc, b));
+  if (/0$/.test(r.h || '') && sc >= zhLearnAt()) sc = zhLearnAt() - 50;
+  return sc;
+}
 const zhLearned = c => zhScore(c) >= zhLearnAt();
-const zhNewScore = (sc, lvl) => lvl === 0 ? Math.max(0, Math.min(Math.floor(sc / 2), zhLearnAt() - 100)) : sc + [0, 25, 100, 150][lvl];
+const zhNewScore = (sc, lvl) => lvl === 0 ? Math.max(0, Math.min(Math.floor(sc / 2), zhLearnAt() - 100)) : lvl === 1 ? Math.min(sc + 25, zhLearnAt() - 50) : sc + [0, 25, 100, 150][lvl];
 // a StudyHub review record, or null (an undone first rating leaves { n: 0 }, a reader lookup { lk })
 function zhRec(c) { const r = zhP().cards[c.id]; return r && (r.n || r.lk) ? r : null; }
 // Pleco cards never reviewed here get a review date from their last Pleco review: Pleco's score roughly doubles with each
@@ -203,7 +215,7 @@ function zhRate(c, lvl, again) {
   const days = (r.dd || 0) + (c.pl && c.pl.ok && c.pl.last && dayKey(c.pl.last) !== day ? 1 : 0);
   r.cap = !wasLearned && sc >= at && days < 2;
   if (r.cap) sc = at - 1;
-  r.sc = sc;
+  r.sc = sc; r.v = 2;
   if (lvl === 0) { r.b = 1; r.due = now; }
   else if (lvl === 1) { r.b = Math.max(1, Math.min(r.b, 2)); r.due = now + 0.5 * DAY; }
   else if (again) { r.b = Math.max(1, Math.min(r.b, 2)); r.due = now + DAY; }
@@ -219,7 +231,7 @@ function zhRate(c, lvl, again) {
 function zhLookup(c) {
   const z = zhP(), r = Object.assign({ b: zhStartBox(c), n: 0, ok: 0, bad: 0, h: '' }, z.cards[c.id]);
   const d = zhDue(c);
-  r.sc = Math.max(0, zhScore(c) - 50); r.lk = (r.lk || 0) + 1; r.lkT = Date.now(); r.u = Date.now();
+  r.sc = Math.max(0, zhScore(c) - 50); r.v = 2; r.lk = (r.lk || 0) + 1; r.lkT = Date.now(); r.u = Date.now();
   r.due = Math.min(d === null ? Infinity : d, zhTomorrow());
   z.cards[c.id] = r; saveP();
 }
@@ -407,7 +419,7 @@ function zhPlay(keep) {
     <div class="card zh-card ${s.flipped ? 'flipped' : ''}" ${s.flipped ? '' : 'data-zh="flip" tabindex="0" role="button" aria-label="Show answer"'}>
       ${s.flipped ? zhBack(c) : `<div class="zh-front"><span class="zh-lbl">${({ en: 'Meaning', listen: 'Listen', type: 'Type the pinyin' })[dir] || (ex ? 'In context' : 'Word')}</span>${front}<span class="zh-hint">click or <span class="kbd">Space</span></span></div>`}</div>
     ${zhRateHtml()}
-    <p class="muted small zh-keys"><span class="kbd">Space</span> flip · <span class="kbd">1</span>–<span class="kbd">4</span> rate · <span class="kbd">S</span> listen · <span class="kbd">U</span> undo. ${s.until ? `A card leaves the set when its score reaches ${zhLearnAt()} (Good +100, Easy +150, Hard +25, Don't know halves it).` : `"Don't know" brings the card back later in this set.`}</p></div>`;
+    <p class="muted small zh-keys"><span class="kbd">Space</span> flip · <span class="kbd">1</span>–<span class="kbd">4</span> rate · <span class="kbd">S</span> listen · <span class="kbd">U</span> undo. ${s.until ? `A card leaves the set when its score reaches ${zhLearnAt()} (Good +100, Easy +150, Hard +25 but never learned, Don't know halves it).` : `"Don't know" brings the card back later in this set.`}</p></div>`;
   if (keep && s.flipped) zhToCard(); else window.scrollTo({ top: 0, behavior: 'instant' });
   if (!s.flipped && dir === 'listen' && s.spoken !== s.ids[s.i] + '|' + s.i) { s.spoken = s.ids[s.i] + '|' + s.i; zhSpeak(c.s, true); }
   if (!s.flipped && dir === 'type') { const t = $('#zh-type'); if (t) t.focus({ preventScroll: true }); }
@@ -832,7 +844,7 @@ function zhHome() {
           <label>Show ${sel('dir', [['hz', 'Characters → meaning'], ['en', 'Meaning → characters'], ['type', 'Characters → type the pinyin'], ['listen', 'Listen → meaning']], UI.zhDir || 'hz')}</label>
           <label title="Show the word inside one of its example sentences (characters → meaning only)"><input type="checkbox" data-zc="example" ${UI.zhExample ? 'checked' : ''}> Example sentence on the front</label>
           <label title="The set keeps going round; each card leaves when its score reaches the learned line"><input type="checkbox" data-zc="until" ${UI.zhUntil ? 'checked' : ''}> Repeat until learned</label>
-          <label title="Like Pleco: Good +100, Easy +150, Hard +25, Don't know halves the score">Learned at score <input type="number" min="50" step="50" value="${zhLearnAt()}" data-zc="learnat" class="zh-in" style="width:80px"></label>
+          <label title="Good +100, Easy +150, Hard +25 but counts as a miss (never learned), Don't know halves the score. Pleco scores are converted: 1200 in Pleco = the line">Learned at score <input type="number" min="50" step="50" value="${zhLearnAt()}" data-zc="learnat" class="zh-in" style="width:80px"></label>
           <label><input type="checkbox" data-zc="pinyin" ${UI.zhPinyin ? 'checked' : ''}> Pinyin on the front</label>
           ${ZH.cards.some(c => c.t) ? `<label><input type="checkbox" data-zc="trad" ${UI.zhScript === 'trad' ? 'checked' : ''}> Traditional characters</label>` : ''}
         </div>
