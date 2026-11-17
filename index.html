@@ -439,6 +439,9 @@ body.has-xnav .sidecol{padding-bottom:150px}
 .hlmap li{margin:.45em 0}
 .hlsec{display:inline-flex;align-items:center;gap:5px;margin-left:4px;padding:1px 9px;border-radius:99px;border:1px solid var(--border);font-size:.78rem;color:var(--muted);white-space:nowrap;vertical-align:1px;max-width:100%}
 @media (max-width:700px){.hlsec{white-space:normal}}
+.ann{border-top:1px solid var(--border);padding:8px 0}.ann summary{cursor:pointer;display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline;list-style:none}.ann summary::-webkit-details-marker{display:none}
+.ann .ann-t{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}.ann.unread .ann-t{font-weight:700}.ann.unread .ann-t::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:7px;vertical-align:2px}
+.ann-body{margin-top:6px;font-size:.92rem;overflow-wrap:anywhere;max-height:420px;overflow:auto}
 .hlsec:hover{color:var(--accent);border-color:var(--accent);text-decoration:none}
 .secchips{display:flex;flex-wrap:wrap;gap:6px}
 .secchip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:99px;border:1px solid var(--border);background:var(--surface2);font-size:.82rem;color:var(--text)}
@@ -2465,7 +2468,29 @@ function canvasLoad(force) {
   canvasAsked = true;
   fetch('/canvas-api/files', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => { if (j) { CANVAS = j; canvasRedraw(); } }).catch(() => {});
 }
-function canvasRedraw() { const el = document.getElementById('cv-panel'); if (el) el.outerHTML = canvasPanel(); }
+function canvasRedraw() { const el = document.getElementById('cv-panel'); if (el) el.outerHTML = canvasPanel(); const an = document.getElementById('cv-ann'); if (an) an.outerHTML = annPanel(); }
+// Canvas announcements from the last 14 days: unread ones first in bold; opening one marks it read here (not in Canvas).
+// School-wide notices ('Undergraduate Students') only when switched on.
+function annPanel() {
+  const all = (CANVAS && CANVAS.announcements) || [], read = new Set(UI.cvRead || []), cut = Date.now() - 14 * 864e5;
+  const recent = all.filter(a => Date.parse(a.posted) >= cut), general = recent.filter(a => a.general).length;
+  const list = recent.filter(a => UI.cvGeneral || !a.general);
+  if (!list.length && !general) return '<div id="cv-ann"></div>';
+  const unread = a => !a.read && !read.has(a.id), n = list.filter(unread).length;
+  const cname = a => a.course && getCourse(a.course) ? getCourse(a.course).name : a.cname;
+  const when = t => new Date(t).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  const shown = UI.cvAnnAll ? list : list.slice(0, 6);
+  return `<div class="card" id="cv-ann" style="margin-bottom:16px"><div class="row" style="align-items:baseline"><h3 style="margin:0;flex:1">Announcements${n ? ` <span class="pill small">${n} new</span>` : ''}</h3>${n ? '<a href="#" class="small" data-action="ann-allread">Mark all read</a>' : ''}</div>
+    <p class="small muted" style="margin:4px 0 8px">From Canvas, last 14 days.</p>
+    ${shown.map(a => `<details class="ann${unread(a) ? ' unread' : ''}" data-ann="${a.id}"><summary><span class="ann-t">${esc(a.title)}</span><span class="small muted ann-m">${esc(cname(a))} · ${esc(when(a.posted))}</span></summary>
+      <div class="ann-body">${esc(a.text).replace(/\n/g, '<br>')}</div><div class="small" style="margin-top:6px">${esc(a.by)}${a.url ? ` · <a href="${esc(a.url)}" target="_blank" rel="noopener">Open in Canvas ↗</a>` : ''}</div></details>`).join('')}
+    <div class="small muted" style="margin-top:8px">${list.length > shown.length ? `<a href="#" data-action="ann-more">Show all ${list.length}</a> · ` : ''}<a href="#" data-action="ann-general">${UI.cvGeneral ? 'Hide' : 'Show'} school-wide notices${general ? ` (${general})` : ''}</a></div></div>`;
+}
+document.addEventListener('toggle', ev => {
+  const d = ev.target; if (!(d instanceof HTMLDetailsElement) || !d.dataset.ann || !d.open) return;
+  const id = +d.dataset.ann; if (!(UI.cvRead || []).includes(id)) { UI.cvRead = [...(UI.cvRead || []), id].slice(-1000); saveUI(); }
+  d.classList.remove('unread');
+}, true);
 function canvasPending() {
   if (!CANVAS || !CANVAS.on) return { lec: [], other: [] };
   const hide = UI.cvHide || [], used = new Set(allLectures().flatMap(L => (L.pdfs || []).map(p => String(p).split('/').pop())));
@@ -2635,7 +2660,7 @@ function viewHome() {
   const priorities = studyPriorities();
   main.innerHTML = `
     <div class="hero"><div><h1>Study dashboard</h1><div class="muted">Work on one or two sections from a lecture, guided by your previous results.</div></div></div>
-    ${canvasPanel()}${dailyPanel()}${nextSessionPanel()}
+    ${canvasPanel()}${annPanel()}${dailyPanel()}${nextSessionPanel()}
     <h2>Your progress</h2>${progressBlock(lecs)}
     ${priorities.length ? `<div class="card" style="margin-bottom:22px"><h3 style="margin:0">Priority topics</h3><p class="small muted" style="margin:4px 0">Based on missed answers, difficult flashcards and sections due to explain. Topic matches are suggestions.</p><div class="rv-list">${priorities.slice(0, 3).map(it => reviewRow(it.L.course, it)).join('')}</div></div>` : ''}
     ${(() => { const l = P.last && getCourse(P.last.c) && getCourse(P.last.c).lectures.find(x => x.slug === P.last.l); return l ? `<div class="card" style="margin-bottom:16px"><div class="row"><div><div class="small muted">Continue where you left off</div><b>${esc(l.title)}</b></div><span class="spacer"></span><a class="btn" href="#/c/${esc(P.last.c)}/${esc(l.slug)}/${esc(P.last.t)}">Continue →</a></div></div>` : ''; })()}
@@ -4496,6 +4521,9 @@ function handleClick(ev) {
     case 'tex-line': if (TEX.cm) { const ln = Math.max(0, +d.l - 1); TEX.cm.setCursor({ line: ln, ch: 0 }); TEX.cm.focus(); TEX.cm.scrollIntoView({ line: ln, ch: 0 }, 120); } break;
     case 'cards-more': { const src = session && session.src, back = session ? session.back : '#/'; if (src) reviewDue(src, back); break; }
     case 'study-due': { reviewDue(d.id, location.hash || '#/'); break; }
+    case 'ann-allread': ev.preventDefault(); UI.cvRead = [...new Set([...(UI.cvRead || []), ...((CANVAS && CANVAS.announcements) || []).map(a => a.id)])].slice(-1000); saveUI(); canvasRedraw(); break;
+    case 'ann-more': ev.preventDefault(); UI.cvAnnAll = true; saveUI(); canvasRedraw(); break;
+    case 'ann-general': ev.preventDefault(); UI.cvGeneral = !UI.cvGeneral; saveUI(); canvasRedraw(); break;
     case 'cv-hide': UI.cvHide = [...(UI.cvHide || []), d.p].slice(-200); saveUI(); canvasRedraw(); break;
     case 'cv-prompt': {
       const C = getCourse(d.c) || { name: d.c };
