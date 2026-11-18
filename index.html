@@ -2872,9 +2872,11 @@ function pyLoad() {
 }
 async function pyEnsurePackages(needText = '') {
   const py = await pyLoad();
-  if (/scipy|binom|stats\./.test(needText) && !PY.pk.scipy) {
-    if (!PY.pkgLoads.scipy) PY.pkgLoads.scipy = py.loadPackage('scipy').then(() => { PY.pk.scipy = 1; }).finally(() => { delete PY.pkgLoads.scipy; });
-    await PY.pkgLoads.scipy;
+  // optional packages, loaded the first time a question needs them: [key, test, Pyodide package]
+  for (const [k, re, pkg] of [['scipy', /scipy|binom|stats\./, 'scipy'], ['sklearn', /sklearn|LinearRegression/, 'scikit-learn']]) {
+    if (!re.test(needText) || PY.pk[k]) continue;
+    if (!PY.pkgLoads[k]) PY.pkgLoads[k] = py.loadPackage(pkg).then(() => { PY.pk[k] = 1; }).finally(() => { delete PY.pkgLoads[k]; });
+    await PY.pkgLoads[k];
   }
   return py;
 }
@@ -2882,7 +2884,7 @@ async function pyEnsurePackages(needText = '') {
 // to comparing with the answer yourself instead of staying stuck. The download carries on for later questions.
 const PY_WAIT = 20000;
 function pyReady(needText) {
-  if (PY.py && !/scipy|binom|stats\./.test(needText)) return pyEnsurePackages(needText);
+  if (PY.py && !/scipy|binom|stats\.|sklearn|LinearRegression/.test(needText)) return pyEnsurePackages(needText);
   return Promise.race([pyEnsurePackages(needText), new Promise((_, rej) => setTimeout(() => rej(new Error('The Python engine is still downloading (slow or blocked connection).')), PY_WAIT))]);
 }
 async function pyCall(fn, args, needText) {
