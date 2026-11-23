@@ -5,7 +5,7 @@
    globals (P, UI, esc, $, main, go, toast, saveP, saveUI, shuffle, mergeItems, DAY, bumpDay).
    =================================================================== */
 const ZH = { deck: null, cards: [], byId: new Map(), bySimp: new Map(), scorePct: new Map(), dict: null, dictP: null,
-  fileTexts: [], textsDir: '', live: null, ver: 0, cur: null, sel: new Set(), open: new Set(), pending: null, poll: 0, prompt: '' };
+  fileTexts: [], textsDir: '', ex: new Map(), exKey: '', known: null, knownAt: 0, live: null, ver: 0, cur: null, sel: new Set(), open: new Set(), pending: null, poll: 0, prompt: '' };
 const ZH_INT = [0, 0.5, 1, 3, 7, 16, 35, 80];       // days until the next review, per box (0 = never reviewed here)
 const ZH_HAN = /\p{Script=Han}/u;
 const ZH_WEAK = 0.35;                                // weakness from which a card counts as weak
@@ -50,7 +50,7 @@ function zhSetDeck(deck) {
 function zhInit() {
   if (ZH.deck) return;
   const B = window.STUDYHUB_ZH || {};
-  zhSetDeck(B.deck); ZH.fileTexts = B.texts || [];
+  zhSetDeck(B.deck); ZH.fileTexts = B.texts || []; zhSetEx(B.examples);
   if (location.protocol === 'file:') ZH.textsDir = decodeURIComponent(location.pathname).replace(/\/[^/]*$/, '') + '/content/_chinese/texts';
 }
 // when served, read the deck and the texts fresh (new Pleco import or a text Claude Code just wrote, without a rebuild)
@@ -62,6 +62,7 @@ function zhLoad(force) {
   ]).then(([deck, tx]) => {
     let changed = false;
     if (deck && deck.imported !== (ZH.deck && ZH.deck.imported)) { zhSetDeck(deck); changed = true; }
+    if (tx && tx.examples && zhSetEx(tx.examples)) changed = true;
     if (tx) { ZH.textsDir = tx.dir || ZH.textsDir; const ids = t => t.map(x => x.id).join(); if (ids(tx.texts || []) !== ids(ZH.fileTexts)) { ZH.fileTexts = tx.texts || []; changed = true; } }
     if (changed) ZH.ver++;
     ZH.liveDone = true;
@@ -69,6 +70,48 @@ function zhLoad(force) {
     return changed;
   });
   return ZH.live;
+}
+
+/* ---------- example sentences at your level ---------- */
+// examples Claude Code wrote (content/_chinese/examples/*.json, {card id: [{zh, py, en}]}); true when they changed
+function zhSetEx(obj) {
+  const key = Object.keys(obj || {}).length + ':' + JSON.stringify(obj || {}).length;
+  if (key === ZH.exKey) return false;
+  ZH.exKey = key; ZH.ex = new Map(Object.entries(obj || {})); return true;
+}
+// the words you have learned (score at the line), rebuilt at most every few seconds and after each rating
+function zhKnown() {
+  if (ZH.known && Date.now() - ZH.knownAt < 5000) return ZH.known;
+  ZH.known = new Set(ZH.cards.filter(c => zhLearned(c)).map(c => c.s)); ZH.knownAt = Date.now(); return ZH.known;
+}
+// words in a sentence that you have not learned yet (the card's own word and its parts do not count)
+// split into your deck's words only (a dictionary word that is not in the deck falls apart into characters), so the
+// result is the same with or without CC-CEDICT loaded; the card's word is cut out first, so it is never split
+const zhSegAround = (zh, c) => { const g = ZH.dict; ZH.dict = null; try { return zh.split(c.s).map(p => zhSegment(p)); } finally { ZH.dict = g; } };
+function zhUnknownIn(zh, c) {
+  const K = zhKnown();
+  return [...new Set(zhSegAround(zh, c).flat().filter((t, i, a) => t.han && !c.s.includes(t.t) && !K.has(t.t) && !(t.t === '儿' && i > 0)).map(t => t.t))];
+}
+// every example for a card: the ones written for you first, then Pleco's that contain the word in a real sentence
+function zhExamples(c) {
+  const own = (ZH.ex.get(c.id) || []).map(e => Object.assign({ gen: true }, e));
+  const pl = zhIsPleco(c.def) ? zhParseDef(c.def).flatMap(b => b.senses.flatMap(x => x.ex)).filter(e => e.zh.includes(c.s) && e.zh.length > c.s.length + 2 && e.en) : [];
+  return own.concat(pl);
+}
+// the example with the fewest words you have not learned; full sentences before phrases; null when there is none
+function zhBestExample(c) {
+  let best = null;
+  for (const e of zhExamples(c)) {
+    const unk = zhUnknownIn(e.zh, c), sent = /[。！？]$/.test(e.zh) ? 0 : 1;
+    const k = unk.length * 10 + sent + (e.zh.length > 40 ? 1 : 0);
+    if (!best || k < best.k) best = { e, unk, k };
+  }
+  return best;
+}
+// a sentence with the card's word marked and the words you have not learned dotted
+function zhExHtml(zh, c, unk) {
+  const U = new Set(unk || zhUnknownIn(zh, c)), head = `<mark>${esc(zhHead(c))}</mark>`;
+  return zhSegAround(zh, c).map(seg => seg.map(t => t.han && U.has(t.t) ? `<span class="zh-unkw" title="Not learned yet">${esc(t.t)}</span>` : esc(t.t)).join('')).join(head);
 }
 
 /* ---------- dictionary (CC-CEDICT, vendor/cedict.tsv, only when served) ---------- */
@@ -91,9 +134,9 @@ const zhDictGet = w => ZH.dict && ZH.dict.get(w) ? ZH.dict.get(w).slice().sort((
 /* Pleco definitions: "noun 1 sports referee; judge 他应邀… Tā yìngyāo… He is asked… 2 law judgment …\nverb …".
    Parsed into parts of speech > numbered meanings > examples (characters, pinyin, English). */
 const ZH_POS = /^(noun|verb|adjective|idiom|adverb|pronoun|conjunction|measure word|number|numeral|auxiliary|preposition|interjection|affix|particle|onomatopoeia|prefix|suffix|phrase|classifier)\b\s*/i;
-const ZH_TAG = /^(sports|law|abbreviation|colloquial|literary|computing|chemistry|physics|medicine|mathematics|biology|music|military|economics|finance|dialect|formal|informal|figurative|derogatory|polite|humble|archaic|botany|zoology|entomology|linguistics|grammar|religion|Buddhism|politics|written|spoken|euphemism|slang|internet|commerce|business|electricity|geography|geology|history|philosophy|psychology|statistics|transport|agriculture|architecture|astronomy|cooking|art|photography|printing|mechanics|engineering|anatomy|physiology|pharmacology|meteorology|education|journalism|sociology|traditional Chinese medicine)\s+/i;
+const ZH_TAG = /^(sports|law|abbreviation|colloquial|literary|computing|chemistry|physics|medicine|mathematics|biology|music|military|economics|finance|dialect|formal|informal|figurative|derogatory|polite expression|polite|humble|archaic|botany|zoology|entomology|linguistics|grammar|religion|Buddhism|politics|written|spoken|euphemism|slang|internet|commerce|business|electricity|geography|geology|history|philosophy|psychology|statistics|transport|agriculture|architecture|astronomy|cooking|art|photography|printing|mechanics|engineering|anatomy|physiology|pharmacology|meteorology|education|journalism|sociology|traditional Chinese medicine)\s+/i;
 const ZH_TONE = /[āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]/i;
-const ZH_NEUT = new Set('de le ma ne ba zi men a ya la me ge li tou zhe guo r er wa na'.split(' '));
+const ZH_NEUT = new Set('de le ma ne ba zi men a ya la me ge li tou zhe guo r er wa na shang xia qu lai bu yi zhene jia'.split(' '));
 const zhIsPleco = def => ZH_POS.test(def || '') || /^1\s/.test(def || '');
 function zhSenseSplit(t) {            // "1 a 2 b 3 c" -> [a, b, c]; numbers must come in order
   t = t.trim(); if (!/^1\s/.test(t)) return [t];
@@ -108,26 +151,41 @@ function zhSenseSplit(t) {            // "1 a 2 b 3 c" -> [a, b, c]; numbers mus
   return out.map(x => x.trim()).filter(Boolean);
 }
 function zhSense(t) {
-  const w = t.split(/\s+/).filter(Boolean), isZh = x => ZH_HAN.test(x) || /^[　-〿＀-￯—…]+$/.test(x);
+  const w = t.split(/\s+/).filter(Boolean), isDash = x => /^[—–-]+$/.test(x);
+  const isZh = x => ZH_HAN.test(x) || /^[　-〿＀-￯—…]+$/.test(x), isZhStart = x => isZh(x) && !isDash(x);
+  // a cross-reference ("See 正音", "= 超级市场", "VARIANT OF 被") stays in the meaning; an example has pinyin after it
+  const ref = k => k > 0 && !ZH_TONE.test(w[k + 1] || '') && (/^(see|=|cf\.?|→)$/i.test(w[k - 1].replace(/[:,]$/, '')) || /^(variant|short|same|abbr\.?) (of|for|as)$/i.test((w[k - 2] || '') + ' ' + w[k - 1]));
   let depth = 0, k = 0;
-  for (; k < w.length; k++) { if (depth === 0 && isZh(w[k])) break; depth += (w[k].match(/[([]/g) || []).length - (w[k].match(/[)\]]/g) || []).length; if (depth < 0) depth = 0; }
-  let m = w.slice(0, k).join(' '), tag = '';
-  const tm = ZH_TAG.exec(m); if (tm && m.length > tm[0].length) { tag = tm[1]; m = m.slice(tm[0].length); }
+  for (; k < w.length; k++) {
+    if (depth === 0 && isZhStart(w[k]) && !ref(k)) break;
+    depth += (w[k].match(/[([]/g) || []).length - (w[k].match(/[)\]]/g) || []).length; if (depth < 0) depth = 0;
+  }
+  let m = w.slice(0, k).join(' '), tags = [], tm;
+  while (tags.length < 3 && (tm = ZH_TAG.exec(m)) && m.length > tm[0].length) { tags.push(tm[1]); m = m.slice(tm[0].length); }
   const bare = x => x.replace(/[^\p{L}-]/gu, '').toLowerCase();
-  const isPy = (x, nx) => ZH_TONE.test(x) || (ZH_NEUT.has(bare(x)) && (/[.,?!;:]$/.test(x) || !nx || ZH_TONE.test(nx) || ZH_NEUT.has(bare(nx))));
+  const isPy = (x, nx) => ZH_TONE.test(x) || (ZH_NEUT.has(bare(x)) && (/[.,?!;:？！，。]$/.test(x) || !nx || ZH_TONE.test(nx) || ZH_NEUT.has(bare(nx))));
+  const short = x => /^[\d.,:%°]+$/.test(x) || (x.length <= 4 && /^[\dA-Za-z%°.,:]+$/.test(x));   // "36", "P" inside a sentence
+  // sentences in the Chinese, so the pinyin of a two-sentence example or a dialogue ("——") is not cut after the first
+  const zhEnds = s => (s.match(/[。！？!?][”"’)）]?|——/g) || []).length;
+  const pyEnds = a => a.filter(x => /[.?!？！。]["”’)]?$/.test(x) || /^[—–]/.test(x)).length;
+  const zhOpen = a => { const t = a.join(' '); return (t.match(/[(（]/g) || []).length > (t.match(/[)）]/g) || []).length; };
   const ex = []; let e = null, st = '';
   for (let i = k; i < w.length; i++) {
-    const x = w[i];
-    if (isZh(x) && st !== 'py') { if (st !== 'zh') { e = { zh: [], py: [], en: [] }; ex.push(e); } e.zh.push(x); st = 'zh'; continue; }
-    if (isZh(x)) { e = { zh: [x], py: [], en: [] }; ex.push(e); st = 'zh'; continue; }
+    const x = w[i], nx = w[i + 1];
+    if (st === 'zh' && (isZh(x) || ((isDash(x) || short(x)) && nx && isZhStart(nx)))) { e.zh.push(x); continue; }
+    if (isZhStart(x) && st !== 'en' && st !== 'py') { e = { zh: [x], py: [], en: [] }; ex.push(e); st = 'zh'; continue; }
     if (st === 'zh' || st === 'py') {
-      const endPy = st === 'py' && /[.?!]$/.test(e.py[e.py.length - 1] || '');
-      if (!endPy && (isPy(x, w[i + 1]) || /^[—–-]+$/.test(x))) { e.py.push(x); st = 'py'; continue; }
+      const endPy = st === 'py' && /[.?!？！。]["”’)]?$/.test(e.py[e.py.length - 1] || '');
+      const more = pyEnds(e.py) < zhEnds(e.zh.join(''));
+      const pyLike = isPy(x, nx) || isDash(x) || (/^[—–]/.test(x) && isPy(x.replace(/^[—–-]+/, ''), nx)) || x === '(or)' || (short(x) && nx && isPy(nx, w[i + 2]));
+      const source = st === 'py' && /^[(（]《?\p{Lu}/u.test(x) && ZH_TONE.test(x) && /[)）]/.test(x + ' ' + (nx || '') + ' ' + (w[i + 2] || ''));   // "(Máo Zédōng)" after a quote
+      if ((pyLike && (!endPy || more)) || source) { e.py.push(x); st = 'py'; continue; }
+      if (isZhStart(x)) { e = { zh: [x], py: [], en: [] }; ex.push(e); st = 'zh'; continue; }
       st = 'en';
-    }
+    } else if (isZhStart(x) && !(/^[(（]/.test(x) && !/[)）]\p{Script=Han}/u.test(x)) && !zhOpen(e.en)) { e = { zh: [x], py: [], en: [] }; ex.push(e); st = 'zh'; continue; }
     e.en.push(x);
   }
-  return { m: m.trim(), tag, ex: ex.map(e => ({ zh: e.zh.join(' '), py: e.py.join(' '), en: e.en.join(' ') })) };
+  return { m: m.trim(), tag: tags.join(' · '), ex: ex.map(e => ({ zh: e.zh.join(' '), py: e.py.join(' '), en: e.en.join(' ') })) };
 }
 function zhParseDef(def) {
   return String(def || '').split('\n').map(l => l.trim()).filter(Boolean).map(l => {
@@ -137,10 +195,11 @@ function zhParseDef(def) {
 }
 // short meaning for chips, the sheet and prompts: the first meanings, no examples
 function zhGloss(def, n = 2) { return zhParseDef(def).flatMap(b => b.senses.map(x => x.m)).filter(Boolean).slice(0, n).join('; ') || String(def || '').slice(0, 80); }
-function zhDefHtml(def) {
+// with a card: its word is marked in the examples and the words you have not learned are dotted
+function zhDefHtml(def, card) {
   const blocks = zhParseDef(def);
   const sense = (x, i, many) => {
-    const ex = x.ex.map(e => `<div class="zh-ex1"><div lang="zh" class="zh-exz">${esc(e.zh)}</div>${e.py ? `<div class="zh-exp">${esc(e.py)}</div>` : ''}${e.en ? `<div class="zh-exe">${esc(e.en)}</div>` : ''}</div>`);
+    const ex = x.ex.map(e => `<div class="zh-ex1"><div lang="zh" class="zh-exz">${card ? zhExHtml(e.zh, card) : esc(e.zh)}</div>${e.py ? `<div class="zh-exp">${esc(e.py)}</div>` : ''}${e.en ? `<div class="zh-exe">${esc(e.en)}</div>` : ''}</div>`);
     return `<li class="zh-sense">${many ? `<span class="zh-sn">${i + 1}</span>` : ''}<div>${x.tag ? `<span class="zh-tag">${esc(x.tag)}</span> ` : ''}<b class="zh-m">${esc(x.m)}</b>
       ${ex.length ? `<div class="zh-exs">${ex.slice(0, 2).join('')}${ex.length > 2 ? `<details class="zh-more"><summary>${ex.length - 2} more example${ex.length > 3 ? 's' : ''}</summary>${ex.slice(2).join('')}</details>` : ''}</div>` : ''}</div></li>`;
   };
@@ -340,7 +399,7 @@ function zhSave() { try { if (ZS) sessionStorage.setItem(LS_ZHS, JSON.stringify(
 function zhRestore() { try { ZS = JSON.parse(sessionStorage.getItem(LS_ZHS) || 'null'); } catch (e) { ZS = null; } return !!ZS; }
 const zhHead = c => UI.zhScript === 'trad' && c.t ? c.t : c.s;
 function zhRateHtml() {
-  const undo = ZS.undo ? '<button class="btn ghost" data-zh="undo" title="Undo the last rating (U)">↶ Undo</button>' : '';
+  const undo = zhCanUndo() ? '<button class="btn ghost" data-zh="undo" title="Undo the last rating (← or U)">↶ Undo</button>' : '';
   const sug = ZS.flipped && ZS.typed ? ZS.typed.sug : -1;
   return ZS.flipped
     ? `<div class="rate">${[['0', "Don't know", 'bad'], ['1', 'Hard', 'warnbtn'], ['2', 'Good', 'primary'], ['3', 'Easy', 'good']].map(([l, t, k]) => `<button class="btn ${k}${+l === sug ? ' zh-sug' : ''}" data-zh="rate" data-l="${l}">${t} <span class="kbd" style="background:transparent;color:inherit">${+l + 1}</span></button>`).join('')}</div>`
@@ -366,14 +425,16 @@ function zhCheckPy(typed, py) {
   if (alts.some(a => zhPyBare(a) === zhPyBare(typed))) return { ok: false, tones: true, sug: 1 };
   return { ok: false, tones: false, sug: 0 };
 }
-// first example sentence that contains the word (from the Pleco entry), for the front of the card
-function zhExample(c) {
-  if (!zhIsPleco(c.def)) return null;
-  for (const b of zhParseDef(c.def)) for (const x of b.senses) for (const e of x.ex) if (e.zh.includes(c.s) && e.zh.length > c.s.length + 2) return e;
-  return null;
-}
+// example sentence for the front of the card: only one where you have learned every other word
+function zhExample(c) { const b = zhBestExample(c); return b && !b.unk.length ? b.e : null; }
 function zhCharsHtml(word, big) {
   return [...word].map(ch => ZH_HAN.test(ch) ? `<button class="zh-ch${big ? ' big' : ''}${zhHard(ch) ? ' hard' : ''}${zhUnk(ch) ? ' unk' : ''}" data-zh="char" data-c="${esc(ch)}" data-w="${esc(word)}" title="Flag this character">${esc(ch)}</button>` : esc(ch)).join('');
+}
+function zhExBox(c) {
+  const b = zhBestExample(c); if (!b) return '';
+  const e = b.e, n = b.unk.length;
+  return `<div class="zh-exbox"><div class="zh-pos">Example <span class="zh-exnote">${n ? `${n} word${n === 1 ? '' : 's'} not learned yet` : 'every word learned'}${e.gen ? ' · written for you' : ''}</span></div>
+    <div lang="zh" class="zh-exz">${zhExHtml(e.zh, c, b.unk)} <button class="btn sm ghost" data-zh="speak" data-w="${esc(e.zh)}" title="Listen" aria-label="Listen">🔊</button></div>${e.py ? `<div class="zh-exp">${esc(e.py)}</div>` : ''}${e.en ? `<div class="zh-exe">${esc(e.en)}</div>` : ''}</div>`;
 }
 function zhBack(c) {
   const chars = [...c.s].filter(ch => ZH_HAN.test(ch));
@@ -387,7 +448,8 @@ function zhBack(c) {
       <div class="zh-hw" lang="zh">${zhCharsHtml(zhHead(c), true)}</div>
       <div class="zh-py">${esc(c.py)} <button class="btn sm ghost" data-zh="speak" data-w="${esc(c.s)}" title="Listen (S)" aria-label="Listen">🔊</button></div>
       <div class="zh-scoreline small muted"><span class="zh-lb wide"><i style="width:${Math.min(100, Math.round(100 * sc / at))}%"></i></span> ${zhLearned(c) ? '<b class="zh-ok">learned</b>' : `score ${sc} / ${at}`}${capNote}${stats ? ' · ' + stats : ''}</div></div>
-    <div class="zh-defs">${zhIsPleco(c.def) ? zhDefHtml(c.def) : `<b class="zh-m">${esc(c.def).replace(/\n/g, '<br>')}</b>`}</div>
+    ${zhExBox(c)}
+    <div class="zh-defs">${zhIsPleco(c.def) ? zhDefHtml(c.def, c) : `<b class="zh-m">${esc(c.def).replace(/\n/g, '<br>')}</b>`}</div>
     ${gl ? `<div class="zh-gl"><div class="zh-pos">Characters</div>${gl}</div>` : ''}
     <div class="zh-afoot small muted">
       <button class="btn sm ${zhHardW(c.id) ? 'warnbtn' : 'ghost'}" data-zh="flag-word" data-id="${esc(c.id)}" title="Flag this word as hard">⚑ ${zhHardW(c.id) ? 'Flagged' : 'Flag word'}</button>
@@ -408,7 +470,7 @@ function zhPlay(keep) {
   const front = en ? `<div class="zh-def big"><b>${esc(zhShort(c.def, 3))}</b></div>`
     : dir === 'listen' ? `<button class="btn primary zh-listen" data-zh="speak" data-w="${esc(c.s)}">🔊 Listen again</button><div class="small muted" style="margin-top:10px">What does it mean?</div>`
     : dir === 'type' ? `${head}<input id="zh-type" class="zh-in zh-typein" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="pinyin: ni3hao3 or nǐhǎo" aria-label="Type the pinyin">`
-    : ex ? `<div class="zh-exfront" lang="zh">${esc(ex.zh).split(esc(c.s)).join(`<mark>${esc(zhHead(c))}</mark>`)}</div><div class="small muted" style="margin-top:8px">What does the marked word mean?</div>`
+    : ex ? `<div class="zh-exfront" lang="zh">${zhExHtml(ex.zh, c, [])}</div><div class="small muted" style="margin-top:8px">What does the marked word mean?</div>`
     : head;
   main.innerHTML = `<div class="deck-wrap zh-play ${s.flipped ? '' : 'front'}">
     <div class="crumbs"><a href="#/zh">← Chinese</a> · Set ${s.setNo}${s.o.title ? ' · ' + esc(s.o.title) : ''}</div>
@@ -419,7 +481,7 @@ function zhPlay(keep) {
     <div class="card zh-card ${s.flipped ? 'flipped' : ''}" ${s.flipped ? '' : 'data-zh="flip" tabindex="0" role="button" aria-label="Show answer"'}>
       ${s.flipped ? zhBack(c) : `<div class="zh-front"><span class="zh-lbl">${({ en: 'Meaning', listen: 'Listen', type: 'Type the pinyin' })[dir] || (ex ? 'In context' : 'Word')}</span>${front}<span class="zh-hint">click or <span class="kbd">Space</span></span></div>`}</div>
     ${zhRateHtml()}
-    <p class="muted small zh-keys"><span class="kbd">Space</span> flip · <span class="kbd">1</span>–<span class="kbd">4</span> rate · <span class="kbd">S</span> listen · <span class="kbd">U</span> undo. ${s.until ? `A card leaves the set when its score reaches ${zhLearnAt()} (Good +100, Easy +150, Hard +25 but never learned, Don't know halves it).` : `"Don't know" brings the card back later in this set.`}</p></div>`;
+    <p class="muted small zh-keys"><span class="kbd">Space</span> flip · <span class="kbd">1</span>–<span class="kbd">4</span> rate · <span class="kbd">S</span> listen · <span class="kbd">←</span> undo. ${s.until ? `A card leaves the set when its score reaches ${zhLearnAt()} (Good +100, Easy +150, Hard +25 but never learned, Don't know halves it).` : `"Don't know" brings the card back later in this set.`}</p></div>`;
   if (keep && s.flipped) zhToCard(); else window.scrollTo({ top: 0, behavior: 'instant' });
   if (!s.flipped && dir === 'listen' && s.spoken !== s.ids[s.i] + '|' + s.i) { s.spoken = s.ids[s.i] + '|' + s.i; zhSpeak(c.s, true); }
   if (!s.flipped && dir === 'type') { const t = $('#zh-type'); if (t) t.focus({ preventScroll: true }); }
@@ -441,22 +503,26 @@ function zhToCard() {
   const bar = ($('.topbar') && getComputedStyle($('.topbar')).display !== 'none' && !document.body.classList.contains('top-hidden')) ? $('.topbar').offsetHeight : 0;
   window.scrollTo({ top: Math.max(0, el.getBoundingClientRect().top + scrollY - bar - 70), behavior: 'instant' });
 }
+const ZH_UNDO = 20;                                  // ratings that can be undone, one after another
+const zhCanUndo = () => !!(ZS && ((ZS.undos && ZS.undos.length) || ZS.undo));
 function zhRateCur(l) {
   const s = ZS, c = ZH.byId.get(s.ids[s.i]); if (!c || !s.flipped) return;
-  const z = zhP(), undo = { id: c.id, rec: z.cards[c.id] ? JSON.parse(JSON.stringify(z.cards[c.id])) : null, day: z.days[today()] ? Object.assign({}, z.days[today()]) : null,
-    zs: JSON.stringify(Object.assign({}, s, { undo: null })) };
+  const z = zhP(), stack = (s.undos || []).concat(s.undo ? [s.undo] : []);
+  const undo = { id: c.id, rec: z.cards[c.id] ? JSON.parse(JSON.stringify(z.cards[c.id])) : null, day: z.days[today()] ? Object.assign({}, z.days[today()]) : null,
+    zs: JSON.stringify(Object.assign({}, s, { undo: null, undos: null })) };
   s.typed = null;
   zhRateDo(c, l);
-  ZS.undo = undo; zhSave(); zhPlay();
+  ZS.undo = null; ZS.undos = stack.concat([undo]).slice(-ZH_UNDO); ZH.knownAt = 0; zhSave(); zhPlay();
 }
-// Undo the last rating: the card's record, today's counts and the set go back to just before it (answer showing)
+// Undo the last rating (again for the one before): the card's record, today's counts and the set go back to just before it (answer showing)
 function zhUndo() {
-  const u = ZS && ZS.undo; if (!u) return;
+  if (!zhCanUndo()) return;
+  const stack = (ZS.undos || []).concat(ZS.undo ? [ZS.undo] : []), u = stack.pop();
   const z = zhP();
   z.cards[u.id] = Object.assign(u.rec || { n: 0 }, { u: Date.now() });
   if (u.day) z.days[today()] = u.day; else delete z.days[today()];
-  ZS = JSON.parse(u.zs); ZS.flipped = true; ZS.undo = null; ZS.typed = null;
-  saveP(); zhSave(); zhPlay(true); toast('Last rating undone');
+  ZS = JSON.parse(u.zs); ZS.flipped = true; ZS.undo = null; ZS.undos = stack; ZS.typed = null; ZH.knownAt = 0;
+  saveP(); zhSave(); zhPlay(true); toast(stack.length ? `Rating undone · ← again for the one before` : 'Last rating undone');
 }
 function zhRateDo(c, l) {
   const s = ZS;
@@ -485,7 +551,7 @@ function zhEnd() {
     <p class="muted">${s.good} right · ${s.again} ${s.until ? 'misses on the way' : 'to revisit'}${s.wrapped ? ' · you had been through every matching card, so this set started over' : ''}</p>
     ${miss.length ? `<details class="zh-missd"><summary>${miss.length} word${miss.length === 1 ? '' : 's'} you missed</summary><div class="zh-misslist">${miss.map(c => `<button class="zh-mrow" data-zh="word" data-w="${esc(c.s)}"><b lang="zh">${esc(zhHead(c))}</b><span class="zh-mpy">${esc(c.py)}</span><span class="zh-mm">${esc(zhShort(c.def, 2))}</span></button>`).join('')}</div></details>` : ''}
     <div class="row" style="justify-content:center;margin-top:14px">
-      ${s.undo ? '<button class="btn ghost" data-zh="undo">↶ Undo last rating</button>' : ''}
+      ${zhCanUndo() ? '<button class="btn ghost" data-zh="undo">↶ Undo last rating <span class="kbd" style="background:transparent;color:inherit">←</span></button>' : ''}
       <button class="btn primary" data-zh="next-set">Next set of ${zhBatch()} <span class="kbd" style="background:transparent;color:inherit">Enter</span></button>
       ${miss.length ? `<button class="btn" data-zh="redo-missed">Again: the ${miss.length} I missed</button>` : ''}
       <a class="btn ghost" href="#/zh">Back</a></div>
@@ -843,6 +909,7 @@ function zhHome() {
           <label>Order ${sel('order', [['weak', 'Weakest first'], ['due', 'Most overdue first'], ['random', 'Random']], o.order)}</label>
           <label>Show ${sel('dir', [['hz', 'Characters → meaning'], ['en', 'Meaning → characters'], ['type', 'Characters → type the pinyin'], ['listen', 'Listen → meaning']], UI.zhDir || 'hz')}</label>
           <label title="Show the word inside one of its example sentences (characters → meaning only)"><input type="checkbox" data-zc="example" ${UI.zhExample ? 'checked' : ''}> Example sentence on the front</label>
+          <div class="zh-exgen small muted">Examples use only words you have learned; cards without one show the word alone. <button class="btn sm ghost" data-zh="ex-copy" title="Copies a prompt; paste it into Claude Code, which writes the sentences to content/_chinese/examples">Copy prompt: examples for the next 100 cards</button></div>
           <label title="The set keeps going round; each card leaves when its score reaches the learned line"><input type="checkbox" data-zc="until" ${UI.zhUntil ? 'checked' : ''}> Repeat until learned</label>
           <label title="Good +100, Easy +150, Hard +25 but counts as a miss (never learned), Don't know halves the score. Pleco scores are converted: 1200 in Pleco = the line">Learned at score <input type="number" min="50" step="50" value="${zhLearnAt()}" data-zc="learnat" class="zh-in" style="width:80px"></label>
           <label><input type="checkbox" data-zc="pinyin" ${UI.zhPinyin ? 'checked' : ''}> Pinyin on the front</label>
@@ -1072,6 +1139,36 @@ ${dir}/${id}.json
 ${big ? 'The glossary must list every word in the text that is NOT in my "Words I know" list, split into words the way a dictionary would (names too, no punctuation); words I know may be left out to keep the file small.' : 'The glossary must list every word in the text, split into words the way a dictionary would (single-character words and names too, no punctuation).'} Before saving, check that every target word appears in the text and that the file parses as JSON. Then reply with one line.`;
   return { id, prompt: p };
 }
+// cards coming up (today's set, then the ones due within a week) that have no example where you know every other word
+function zhExNeed(n) {
+  const now = Date.now(), seen = new Set(), out = [];
+  const add = c => { if (!seen.has(c.id) && out.length < n) { seen.add(c.id); const b = zhBestExample(c); if (!b || b.unk.length) out.push(c); } };
+  zhToday().cards.forEach(add);
+  ZH.cards.map(c => [c, zhDue(c)]).filter(([, d]) => d !== null && d < now + 7 * DAY).sort((a, b) => a[1] - b[1]).forEach(([c]) => add(c));
+  return out;
+}
+function zhExPrompt(n = 100) {
+  const cards = zhExNeed(n); if (!cards.length) return null;
+  const d = new Date(), pad = x => String(x).padStart(2, '0');
+  const id = `ex-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  const dir = (ZH.textsDir || '<StudyHub folder>/content/_chinese/texts').replace(/texts\/?$/, 'examples');
+  const p = `Write Chinese example sentences for my flashcards and save them as a JSON file. Do not ask questions; just write the file.
+
+For each card below write 2 short, natural sentences (8-20 characters each) that use the card's word in its most common meaning. Every other word in a sentence must be from my "Words I know" list (or be a very basic grammar word like 的, 了, 是, 不, 很, 在, 我, 你, 他). No names, no rare words. Simplified characters, ending with 。！ or ？
+
+Cards (id, word, pinyin, meaning):
+${cards.map(c => `${c.id}\t${c.s}\t${c.py}\t${zhShort(c.def, 2)}`).join('\n')}
+
+Words I know: ${[...zhKnown()].join(' ')}
+
+Save exactly this JSON shape (UTF-8, valid JSON, the ids exactly as given) to this file:
+${dir}/${id}.json
+
+{ "examples": { "<card id>": [ { "zh": "sentence", "py": "pinyin with tone marks, words separated by spaces", "en": "natural English translation" } ] } }
+
+Before saving, check that each sentence contains its card's word and that the file parses as JSON. Then reply with one line.`;
+  return { id, prompt: p, n: cards.length };
+}
 async function zhCopy(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall back below */ }
   const ta = $('#zh-prompt'); if (!ta) return false;
@@ -1192,6 +1289,8 @@ function zhAct(el, ev) {
     case 'drill-text': { const t = ZH.cur; if (t) zhStart({ ids: (t.targets || []).map(w => ZH.bySimp.get(w)).filter(Boolean).map(c => c.id), order: 'weak', title: t.title }); break; }
     case 'text-del': { if (!confirm('Delete this text?')) break; zhP().texts[d.id] = { t: Date.now(), del: true }; saveP(); go('#/zh/read'); break; }
     case 'add-word': { const id = d.w + '|' + (d.py || '').replace(/\s/g, '').toLowerCase(); zhP().added[id] = { s: d.w, py: d.py, def: d.def, t: Date.now() }; saveP(); zhSetDeck(ZH.deck); toast('Added to your deck (category "From reader")'); zhWordSheet(d.w); break; }
+    case 'ex-copy': { const b = zhExPrompt(100); if (!b) { toast('Every card coming up already has an example at your level'); break; }
+      zhCopy(b.prompt).then(ok => toast(ok ? `Prompt for ${b.n} cards copied - paste it into Claude Code` : 'Could not copy the prompt')); break; }
     case 'gen-copy': { const b = zhBuildPrompt(); if (!b) { toast('No words to practise yet - review some cards or flag some first'); break; }
       ZH.prompt = b.prompt; const ta = $('#zh-prompt'); if (ta) { ta.value = b.prompt; ta.hidden = false; }
       zhCopy(b.prompt).then(ok => { toast(ok ? 'Prompt copied - paste it into Claude Code' : 'Select the prompt below and copy it'); });
@@ -1241,11 +1340,12 @@ document.addEventListener('keydown', ev => {
   if (!ZS || !/^#\/zh\/play/.test(location.hash)) return;
   const tag = (ev.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select' || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-  if (ZS.i >= ZS.ids.length) { if (ev.key === 'Enter') { ev.preventDefault(); zhNext(); } else if (ev.key.toLowerCase() === 'u' && ZS.undo) zhUndo(); return; }
+  const undoKey = ev.key === 'ArrowLeft' || ev.key.toLowerCase() === 'u';
+  if (ZS.i >= ZS.ids.length) { if (ev.key === 'Enter') { ev.preventDefault(); zhNext(); } else if (undoKey && zhCanUndo()) { ev.preventDefault(); zhUndo(); } return; }
   if (ev.key === 'Enter' && ZS.flipped && ZS.typed) { ev.preventDefault(); zhRateCur(ZS.typed.sug); }    // typed: Enter takes the suggested rating
   else if (ev.key === ' ' || ev.key === 'Enter') { ev.preventDefault(); zhFlip(); }
   else if (ZS.flipped && /^[1-4]$/.test(ev.key)) { ev.preventDefault(); zhRateCur(+ev.key - 1); }
-  else if (ev.key.toLowerCase() === 'u' && ZS.undo) zhUndo();
+  else if (undoKey && zhCanUndo()) { ev.preventDefault(); zhUndo(); }
   else if (ev.key.toLowerCase() === 's') { const c = ZH.byId.get(ZS.ids[ZS.i]); if (c) zhSpeak(c.s); }
 });
 window.addEventListener('hashchange', () => zhSheetClose());
@@ -1327,6 +1427,9 @@ window.addEventListener('load', () => setTimeout(() => { if (zhServed() && !wind
 .zh-ch{border:1px solid transparent;background:none;color:inherit;font:inherit;cursor:pointer;border-radius:8px;padding:0 2px}
 .zh-ch:hover{border-color:var(--border);background:var(--surface2)}.zh-ch.hard{color:var(--bad);border-bottom:2px solid var(--bad)}
 .zh-chip{display:inline-flex;align-items:baseline;gap:6px;border:1px solid var(--border);background:var(--surface2);color:inherit;border-radius:999px;padding:4px 10px;margin:3px 2px;cursor:pointer;font:inherit;text-decoration:none}
+.zh-exbox{margin:14px 0 4px;padding:10px 12px;border-radius:10px;background:var(--accent-soft)}.zh-exbox .zh-exz{font-size:1.25em}.zh-exnote{font-weight:400;text-transform:none;letter-spacing:0;opacity:.75;margin-left:6px}
+.zh-exz mark{background:var(--accent-soft);color:var(--accent);border-radius:3px;padding:0 1px}.zh-exbox mark{background:transparent;font-weight:700}
+.zh-unkw{text-decoration:underline dotted;text-decoration-thickness:2px;text-underline-offset:4px;text-decoration-color:var(--warn,#c80)}
 .zh-chip mark,.zh-ex mark{background:var(--accent-soft);color:var(--accent);border-radius:3px}
 .zh-miss{display:flex;flex-wrap:wrap;justify-content:center;gap:4px;margin-top:8px}
 .zh-sheet{position:fixed;left:50%;transform:translateX(-50%);bottom:0;width:min(680px,100%);max-height:55vh;overflow:auto;z-index:60;background:var(--surface);border:1px solid var(--border);border-bottom:0;border-radius:16px 16px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.18);padding:18px 20px 22px}

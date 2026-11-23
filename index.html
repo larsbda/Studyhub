@@ -4763,6 +4763,7 @@ document.addEventListener('keydown', ev => {
     else if (session.flipped && (['1', '2', '3', '4'].includes(ev.key))) { const b = $(`[data-action="rate"][data-level="${+ev.key - 1}"]`); if (b) b.click(); }
     else if (ev.key.toLowerCase() === 'u' && session.undo) undoRate();
     else if (ev.key === 'ArrowRight') { session.i = Math.min(session.queue.length, session.i + 1); session.flipped = false; renderCards(); }
+    else if (ev.key === 'ArrowLeft' && session.undo) undoRate();
     else if (ev.key === 'ArrowLeft') { session.i = Math.max(0, session.i - 1); session.flipped = false; renderCards(); }
   } else if (!session.done) {
     const it = session.items[session.i], k = ev.key.toLowerCase();
