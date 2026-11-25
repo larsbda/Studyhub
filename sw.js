@@ -1,7 +1,7 @@
 /* StudyHub offline copy, cached copy first: the app opens from the phone at once, also on a slow connection.
    A new publish changes this file, so the phone downloads the whole new version in the background (install) and
    switches to it together (activate): the newest version shows the next time StudyHub opens. */
-const CACHE = 'studyhub-96f5c31bfa37';
+const CACHE = 'studyhub-f586539be53c';
 const SHELL = ['./', 'index.html', 'zh.js', 'data.enc', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png'];
 // cache: 'reload' skips the browser's HTTP cache, so the new copy is all from this publish
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting())); });
