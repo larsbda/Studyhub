@@ -47,7 +47,15 @@ function zhSetDeck(deck) {
     ZH.scorePct.set(c.id, sc.length > 1 ? lo / (sc.length - 1) : 0.5);
   });
 }
+// font for the Chinese text: system fonts, so a font the device lacks falls back to the next one (iPhone has no Kai)
+const ZH_FONTS = { sans: ['Sans (PingFang)', '"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",sans-serif'],
+  serif: ['Serif (Song)', '"Songti SC","STSong","Noto Serif SC","Source Han Serif SC","SimSun",serif'],
+  kai: ['Kai (brush)', '"Kaiti SC","STKaiti","KaiTi","BiauKai","Songti SC",serif'],
+  fang: ['Fangsong', '"STFangsong","FangSong","Songti SC",serif'],
+  round: ['Rounded (Yuan)', '"Yuanti SC","STYuanti","Hiragino Maru Gothic ProN","PingFang SC",sans-serif'] };
+const zhFontApply = () => document.documentElement.style.setProperty('--zhfont', (ZH_FONTS[UI.zhFont] || ZH_FONTS.sans)[1]);
 function zhInit() {
+  zhFontApply();
   if (ZH.deck) return;
   const B = window.STUDYHUB_ZH || {};
   zhSetDeck(B.deck); ZH.fileTexts = B.texts || []; zhSetEx(B.examples);
@@ -137,7 +145,18 @@ const ZH_POS = /^(noun|verb|adjective|idiom|adverb|pronoun|conjunction|measure w
 const ZH_TAG = /^(sports|law|abbreviation|colloquial|literary|computing|chemistry|physics|medicine|mathematics|biology|music|military|economics|finance|dialect|formal|informal|figurative|derogatory|polite expression|polite|humble|archaic|botany|zoology|entomology|linguistics|grammar|religion|Buddhism|politics|written|spoken|euphemism|slang|internet|commerce|business|electricity|geography|geology|history|philosophy|psychology|statistics|transport|agriculture|architecture|astronomy|cooking|art|photography|printing|mechanics|engineering|anatomy|physiology|pharmacology|meteorology|education|journalism|sociology|traditional Chinese medicine)\s+/i;
 const ZH_TONE = /[āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]/i;
 const ZH_NEUT = new Set('de le ma ne ba zi men a ya la me ge li tou zhe guo r er wa na shang xia qu lai bu yi zhene jia'.split(' '));
-const zhIsPleco = def => ZH_POS.test(def || '') || /^1\s/.test(def || '');
+/* labels some Pleco entries put before the part of speech or the "1": "literary pronoun 1 …", "common phrase colloquial …",
+   "(shuí) pronoun …", "VARIANT OF 露2 lù verb 1 …", "general name for VARIANT OF 摄影 1 verb …" */
+const ZH_LEAD = new RegExp('^(?:(?:common phrase|polite expression|general name for|bound form|transliteration|courteous|usually|usu\\.|classical|meaningful|meaningless|dated|'
+  + ZH_TAG.source.slice(2, -4) + '|[(（][^)）\\s]{1,12}[)）]|VARIANT OF \\S+(?:\\s+\\S*' + ZH_TONE.source + '\\S*)?(?:\\s+[IVX]+)?(?:\\s+\\d+(?=\\s+' + ZH_POS.source.slice(1, -5) + '\\b))?)\\s+)+', 'i');
+// a line split into its labels and the rest; labels only count when a part of speech, "1" or an example follows them
+function zhLead(l) {
+  const m = ZH_LEAD.exec(l); if (!m) return { lead: '', rest: l };
+  const rest = l.slice(m[0].length);
+  if (!ZH_POS.test(rest) && !/^1\s/.test(rest) && !ZH_HAN.test(rest)) return { lead: '', rest: l };
+  return { lead: m[0].trim().replace(/VARIANT OF/g, 'variant of'), rest };
+}
+const zhIsPleco = def => String(def || '').split('\n').some(l => { const r = zhLead(l.trim()).rest; return ZH_POS.test(r) || /^1\s/.test(r); }) || ZH_HAN.test(def || '');
 function zhSenseSplit(t) {            // "1 a 2 b 3 c" -> [a, b, c]; numbers must come in order
   t = t.trim(); if (!/^1\s/.test(t)) return [t];
   const out = []; let cur = t.slice(2), k = 2;
@@ -188,9 +207,10 @@ function zhSense(t) {
   return { m: m.trim(), tag: tags.join(' · '), ex: ex.map(e => ({ zh: e.zh.join(' '), py: e.py.join(' '), en: e.en.join(' ') })) };
 }
 function zhParseDef(def) {
-  return String(def || '').split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-    const pm = ZH_POS.exec(l), pos = pm ? pm[1] : '';
-    return { pos, senses: zhSenseSplit(pm ? l.slice(pm[0].length) : l).map(zhSense) };
+  return String(def || '').split('\n').map(l => l.trim()).filter(Boolean).map(l0 => {
+    const { lead, rest: l } = zhLead(l0), pm = ZH_POS.exec(l), after = pm ? zhLead(l.slice(pm[0].length)) : { lead: '', rest: l };    // labels can also follow the part of speech
+    const pos = [lead, pm ? pm[1] : '', after.lead].filter(Boolean).join(' · ');
+    return { pos, senses: zhSenseSplit(after.rest).map(zhSense) };
   });
 }
 // short meaning for chips, the sheet and prompts: the first meanings, no examples
@@ -324,17 +344,22 @@ function zhMatches(c, o, gc) {
 }
 // answered right today but held just below the line: learned after one more right answer on another day
 function zhWaiting(c) { const r = zhRec(c); return !!(r && r.cap && r.ld === today() && !zhLearned(c)); }
+// learned and answered right today: done for a repeat-until-learned run over the learned cards
+function zhRightToday(c) { const r = zhRec(c); return !!(r && r.ld === today() && zhLearned(c)); }
+const zhRefresh = o => !!(o.until && o.filter === 'learned');    // repeat the learned cards until each is answered right again
 // what a repeat-until-learned choice still has to do: { left, learned, waiting } over the matching cards
 function zhUntilCounts(o) {
   const all = zhPool(Object.assign({}, o, { until: false }));
   let learned = 0, waiting = 0;
-  for (const c of all) { if (zhLearned(c)) learned++; else if (zhWaiting(c)) waiting++; }
+  if (zhRefresh(o)) { for (const c of all) if (zhRightToday(c)) learned++; }
+  else for (const c of all) { if (zhLearned(c)) learned++; else if (zhWaiting(c)) waiting++; }
   return { total: all.length, learned, waiting, left: all.length - learned - waiting };
 }
 function zhPool(o) {
   const gc = zhGroupChars();
   let cs = o.ids ? o.ids.map(id => ZH.byId.get(id)).filter(Boolean) : ZH.cards.filter(c => zhMatches(c, o, gc));
-  if (o.until) cs = cs.filter(c => !zhLearned(c) && !zhWaiting(c));   // repeat-until-learned: only cards still to do today
+  if (zhRefresh(o)) cs = cs.filter(c => !zhRightToday(c));          // learned cards: only those not answered right today
+  else if (o.until) cs = cs.filter(c => !zhLearned(c) && !zhWaiting(c));   // repeat-until-learned: only cards still to do today
   const ord = o.order || 'weak';
   if (ord === 'random') return shuffle(cs);
   if (ord === 'keep') return cs;
@@ -377,7 +402,10 @@ function zhStart(o, prev) {
   let rest = pool.filter(c => !seen.has(c.id)), wrapped = false;
   if (!rest.length && pool.length) { rest = pool; seen.clear(); wrapped = true; }
   if (!rest.length) {
-    if (o.until) {
+    if (zhRefresh(o)) {
+      const u = zhUntilCounts(o);
+      toast(u.total ? `All ${u.total} learned card${u.total === 1 ? '' : 's'} here answered right today` : 'No learned cards match these choices');
+    } else if (o.until) {
       const u = zhUntilCounts(o);
       toast(u.total ? `All ${u.total} card${u.total === 1 ? '' : 's'} here ${u.total === 1 ? 'is' : 'are'} learned${u.waiting ? ` (${u.waiting} waiting for tomorrow - a right answer then makes ${u.waiting === 1 ? 'it' : 'them'} learned)` : ''}` : 'No cards match these choices');
     } else toast('No cards match these choices');
@@ -555,7 +583,7 @@ function zhEnd() {
       <button class="btn primary" data-zh="next-set">Next set of ${zhBatch()} <span class="kbd" style="background:transparent;color:inherit">Enter</span></button>
       ${miss.length ? `<button class="btn" data-zh="redo-missed">Again: the ${miss.length} I missed</button>` : ''}
       <a class="btn ghost" href="#/zh">Back</a></div>
-    <p class="small muted" style="margin-top:10px">${s.o.today ? (() => { const t = zhToday(); return t.cards.length ? `${t.rev} review${t.rev === 1 ? '' : 's'} and ${t.fresh} new word${t.fresh === 1 ? '' : 's'} left for today.` : 'Nothing more for today.'; })() : s.until ? (() => { const n = zhPool(s.o).length; return n ? `${n} matching card${n === 1 ? '' : 's'} still to learn today.` : (() => { const u = zhUntilCounts(s.o); return `All ${u.total} matching cards are learned${u.waiting ? ` or waiting for tomorrow (${u.waiting})` : ''}.`; })(); })()
+    <p class="small muted" style="margin-top:10px">${s.o.today ? (() => { const t = zhToday(); return t.cards.length ? `${t.rev} review${t.rev === 1 ? '' : 's'} and ${t.fresh} new word${t.fresh === 1 ? '' : 's'} left for today.` : 'Nothing more for today.'; })() : s.until ? (() => { const n = zhPool(s.o).length; return n ? `${n} matching card${n === 1 ? '' : 's'} still to ${zhRefresh(s.o) ? 'answer right' : 'learn'} today.` : (() => { const u = zhUntilCounts(s.o); return `All ${u.total} matching cards are learned${u.waiting ? ` or waiting for tomorrow (${u.waiting})` : ''}.`; })(); })()
       : left ? `${left} matching card${left === 1 ? '' : 's'} not yet in this run.` : 'Every matching card has been in a set; the next set starts over.'}</p></div>`;
 }
 
@@ -875,6 +903,7 @@ function zhCountLine() {
   const n = zhPool(zhOpts()).length;
   if (UI.zhUntil) {
     const u = zhUntilCounts(zhOpts());
+    if (zhRefresh(zhOpts())) return u.left ? `${u.left} of ${u.total} learned cards still to answer right today · ${Math.ceil(u.left / zhBatch())} set${Math.ceil(u.left / zhBatch()) === 1 ? '' : 's'} of ${zhBatch()}` : u.total ? `All ${u.total} learned cards answered right today` : 'No cards match';
     if (!u.left) return u.total ? `All ${u.total} learned${u.waiting ? ` · ${u.waiting} waiting for tomorrow` : ''}` : 'No cards match';
     return `${u.left} of ${u.total} still to learn${u.waiting ? ` · ${u.waiting} waiting for tomorrow` : ''} · ${Math.ceil(u.left / zhBatch())} set${Math.ceil(u.left / zhBatch()) === 1 ? '' : 's'} of ${zhBatch()}`;
   }
@@ -910,8 +939,9 @@ function zhHome() {
           <label>Show ${sel('dir', [['hz', 'Characters → meaning'], ['en', 'Meaning → characters'], ['type', 'Characters → type the pinyin'], ['listen', 'Listen → meaning']], UI.zhDir || 'hz')}</label>
           <label title="Show the word inside one of its example sentences (characters → meaning only)"><input type="checkbox" data-zc="example" ${UI.zhExample ? 'checked' : ''}> Example sentence on the front</label>
           <div class="zh-exgen small muted">Examples use only words you have learned; cards without one show the word alone. <button class="btn sm ghost" data-zh="ex-copy" title="Copies a prompt; paste it into Claude Code, which writes the sentences to content/_chinese/examples">Copy prompt: examples for the next 100 cards</button></div>
-          <label title="The set keeps going round; each card leaves when its score reaches the learned line"><input type="checkbox" data-zc="until" ${UI.zhUntil ? 'checked' : ''}> Repeat until learned</label>
+          <label title="The set keeps going round; each card leaves when its score reaches the learned line. With Cards: Learned, each learned card stays until you answer it right again"><input type="checkbox" data-zc="until" ${UI.zhUntil ? 'checked' : ''}> Repeat until learned</label>
           <label title="Good +100, Easy +150, Hard +25 but counts as a miss (never learned), Don't know halves the score. Pleco scores are converted: 1200 in Pleco = the line">Learned at score <input type="number" min="50" step="50" value="${zhLearnAt()}" data-zc="learnat" class="zh-in" style="width:80px"></label>
+          <label>Font ${sel('font', Object.entries(ZH_FONTS).map(([k, [t]]) => [k, t]), UI.zhFont || 'sans')} <span lang="zh" class="zh-fontprev">学习汉字</span></label>
           <label><input type="checkbox" data-zc="pinyin" ${UI.zhPinyin ? 'checked' : ''}> Pinyin on the front</label>
           ${ZH.cards.some(c => c.t) ? `<label><input type="checkbox" data-zc="trad" ${UI.zhScript === 'trad' ? 'checked' : ''}> Traditional characters</label>` : ''}
         </div>
@@ -1313,6 +1343,7 @@ document.addEventListener('change', ev => {
     case 'newday': UI.zhNewPerDay = Math.max(0, Math.min(200, Math.round(+el.value || 0))); saveUI(); zhRedraw(); return;
     case 'maxrev': UI.zhMaxRev = Math.max(10, Math.min(1000, Math.round(+el.value || 150))); saveUI(); zhRedraw(); return;
     case 'learnat': UI.zhLearnAt = Math.max(50, Math.round(+el.value || 300)); el.value = UI.zhLearnAt; saveUI(); zhRedraw(); return;
+    case 'font': UI.zhFont = el.value; zhFontApply(); break;
     case 'trad': UI.zhScript = el.checked ? 'trad' : 'simp'; break;
     case 'cat': { const v = el.value; let sel = (UI.zhCats || []).filter(x => x !== v);
       ZH.lastTick = el.checked ? v : null;          // only the folder just ticked offers "and up"
@@ -1356,7 +1387,7 @@ window.addEventListener('load', () => setTimeout(() => { if (zhServed() && !wind
 (() => {
   const s = document.createElement('style'); s.id = 'zh-css';
   s.textContent = `
-[lang=zh],.zh-hw,.zh-sbig,.zh-big,.zh-ch{font-family:"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",sans-serif}
+[lang=zh],.zh-hw,.zh-sbig,.zh-big,.zh-ch{font-family:var(--zhfont,"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",sans-serif)}
 .zh-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
 .zh-form{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}.zh-form label{display:inline-flex;gap:6px;align-items:center}.zh-form [hidden]{display:none}.zh-form label{max-width:100%;flex-wrap:wrap}.zh-form select{max-width:100%;min-width:0;background-color:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 8px}
 .zh-in{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;padding:6px 8px;font:inherit}
@@ -1366,7 +1397,7 @@ window.addEventListener('load', () => setTimeout(() => { if (zhServed() && !wind
 .zh-up{border:1px solid var(--border);background:var(--surface);color:var(--muted);font:inherit;font-size:.72rem;border-radius:999px;padding:1px 7px;cursor:pointer;margin-left:6px;}
 .zh-up:hover{color:var(--accent);border-color:var(--accent)}
 .zh-lb{flex:0 0 46px;height:5px;border-radius:3px;background:var(--border);overflow:hidden;margin-left:auto}.zh-lb i{display:block;height:100%;background:var(--good)}.zh-lbn{flex:0 0 34px;text-align:right}
-.zh-tick b{color:var(--text)}
+.zh-tick b{color:var(--text)}.zh-fontprev{font-size:1.15rem;margin-left:6px}
 
 .zh-catk{display:none;padding-left:22px;border-left:1px solid var(--border);margin-left:11px}.zh-catk.open{display:block}
 .zh-link{display:block;color:inherit;text-decoration:none}.zh-link:hover{border-color:var(--accent)}

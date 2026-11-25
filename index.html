@@ -603,7 +603,11 @@ blockquote.note p{margin:.3em 0}
   const ITER = 600000, LS = 'studyhub.pagekey.v1', te = new TextEncoder(), $ = id => document.getElementById(id);
   const b64 = u => btoa(String.fromCharCode(...u)), unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   if (/[?&]lock\b/.test(location.search)) { try { localStorage.removeItem(LS); } catch (e) {} history.replaceState(null, '', location.pathname + location.hash); }
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
+    // a new version finished downloading while the app is open: it opens next time (no reload in the middle of a set)
+    if (navigator.serviceWorker.controller) navigator.serviceWorker.addEventListener('controllerchange', () => { if (typeof toast === 'function') toast('New version downloaded - it opens next time you start StudyHub'); });
+  }
   let blob = null;
   const getBlob = () => blob || (blob = fetch('data.enc', { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error('could not load the data (' + r.status + ')'); return r.arrayBuffer(); }).then(b => new Uint8Array(b)));
   async function keyFrom(pw, salt) {
