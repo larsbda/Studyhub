@@ -575,6 +575,7 @@ blockquote.note p{margin:.3em 0}
 <div id="toast-host"></div>
 <div id="ask-host"></div>
 
+<script src="de.js"></script>
 <div id="gate" role="dialog" aria-labelledby="gate-t">
   <form id="gate-f" autocomplete="on">
     <div class="gate-logo">▤</div>
@@ -1539,6 +1540,7 @@ function mergeP(a, b) {
   m.mid = Object.assign({}, bm); m.midT = Object.assign({}, bt);
   for (const c in am) if (!(c in bm) || (at[c] || 0) >= (bt[c] || 0)) { m.mid[c] = am[c]; m.midT[c] = at[c] || 0; }
   m.zh = typeof zhMerge === 'function' ? zhMerge(a.zh, b.zh) : a.zh || b.zh;   // zh.js: Chinese flashcards
+  m.de = typeof deMerge === 'function' ? deMerge(a.de, b.de) : a.de || b.de;   // de.js: German flashcards
   return m;
 }
 function mergeU(a, b) {
@@ -1616,7 +1618,7 @@ async function ghSync() {
     const changed = await ghPull();
     if (ghStable([sharedP(P), U]) !== GH.base) await ghPush();
     GH.at = Date.now(); GH.err = '';
-    if (changed) { buildCourses(); if (!GH.drawn && !session && !/^#\/(play|zh\/play)/.test(location.hash)) render(); }
+    if (changed) { buildCourses(); if (!GH.drawn && !session && !/^#\/(play|zh\/play|de\/play)/.test(location.hash)) render(); }
     GH.drawn = true;
   } catch (e) { GH.err = e.message || String(e); }
   finally { GH.busy = false; ghStatus(); if (GH.again) { GH.again = false; ghSoon(); } }
@@ -2145,6 +2147,7 @@ function renderSidebar(r) {
     <a class="nav-link ${r.name === 'exam' ? 'active' : ''}" href="#/exam">Exam simulation</a>
     <a class="nav-link ${r.name === 'grades' ? 'active' : ''}" href="#/grades">Grades</a>
     <a class="nav-link ${r.name === 'zh' ? 'active' : ''}" href="#/zh">中文 Chinese</a>
+    ${typeof viewDe === 'function' ? `<a class="nav-link ${r.name === 'de' ? 'active' : ''}" href="#/de">Deutsch</a>` : ''}
     <a class="nav-link ${r.name === 'manage' ? 'active' : ''}" href="#/manage">＋ Add notes &amp; data</a>
     <div class="nav-sec">Courses</div>`;
   coursesActiveFirst().forEach(c => {
@@ -2189,6 +2192,7 @@ function parseRoute() {
   if (parts[0] === 'docs' && parts[1] && getCourse(parts[1])) { r.name = 'docs'; r.course = getCourse(parts[1]); if (parts[2] === 'tex') r.tex = parts[3] || ''; else if (parts[2] === 'pdf') r.pdf = parts[3] || ''; else if (parts[2] === 'slides') r.slides = parts[3] || ''; else if (parts[2] === 'present') r.present = parts[3] || ''; else r.doc = parts[2] || ''; return r; }
   if (['weak', 'exam', 'manage', 'play', 'search', 'grades', 'session'].includes(parts[0])) { r.name = parts[0]; r.arg = parts[1]; }
   if (parts[0] === 'zh') { r.name = 'zh'; r.sub = parts[1] || ''; r.arg = parts[2]; }
+  if (parts[0] === 'de' && typeof viewDe === 'function') { r.name = 'de'; r.sub = parts[1] || ''; r.arg = parts[2]; }
   return r;
 }
 let lastHash = null;
@@ -2207,7 +2211,7 @@ function render() {
   document.body.classList.remove('nav-open');
   window.scrollTo({ top: 0, behavior: 'instant' });
   docLeave();
-  const views = { docs: viewDocs, grades: viewGrades, home: viewHome, session: viewStudySession, course: viewCourse, lecture: viewLecture, weak: viewWeak, exam: viewExamSetup, manage: viewManage, play: viewPlay, search: viewSearch, zh: viewZh };
+  const views = { docs: viewDocs, grades: viewGrades, home: viewHome, session: viewStudySession, course: viewCourse, lecture: viewLecture, weak: viewWeak, exam: viewExamSetup, manage: viewManage, play: viewPlay, search: viewSearch, zh: viewZh, de: r => viewDe(r) };
   document.title = 'StudyHub' + (r.lec ? ' · ' + r.lec.title : r.course ? ' · ' + r.course.name : '');
   const sameLecture = r.name === 'lecture' && lastLecId === r.lec.id;
   prunePlanCards();
@@ -4795,7 +4799,7 @@ document.addEventListener('pointerdown', ev => { tapStart = ev.isPrimary ? { x: 
 document.addEventListener('pointerup', ev => {
   const s = tapStart; tapStart = null;
   if (!s || Math.hypot(ev.clientX - s.x, ev.clientY - s.y) > 10 || Date.now() - s.t > 600 || !s.el.closest) return;
-  if (s.el.closest('a,button,input,textarea,select,label,summary,.zh-ch,#zh-sheet')) return;
+  if (s.el.closest('a,button,input,textarea,select,label,summary,.zh-ch,#zh-sheet,#de-sheet')) return;
   if (s.el.closest('.cards-play.front') && session && session.kind === 'cards' && !session.flipped) { tapFlipAt = Date.now(); flipCard(); }
   else if (s.el.closest('.zh-play.front') && typeof ZS !== 'undefined' && ZS && !ZS.flipped) { tapFlipAt = Date.now(); zhFlip(); }
 }, true);
