@@ -350,22 +350,24 @@ const zhRefresh = o => !!(o.until && o.filter === 'learned');    // repeat the l
 // what a repeat-until-learned choice still has to do: { left, learned, waiting } over the matching cards
 function zhUntilCounts(o) {
   const all = zhPool(Object.assign({}, o, { until: false }));
-  let learned = 0, waiting = 0;
-  if (zhRefresh(o)) { for (const c of all) if (zhRightToday(c)) learned++; }
-  else for (const c of all) { if (zhLearned(c)) learned++; else if (zhWaiting(c)) waiting++; }
-  return { total: all.length, learned, waiting, left: all.length - learned - waiting };
+  let learned = 0, waiting = 0, refresh = 0;      // learned = learned and answered right today; refresh = learned, not yet today
+  for (const c of all) { if (zhLearned(c)) { if (zhRightToday(c)) learned++; else refresh++; } else if (zhWaiting(c)) waiting++; }
+  return { total: all.length, learned, waiting, refresh, left: all.length - learned - waiting };
 }
+// repeat-until-learned: cards not learned yet go first, then the learned ones to answer right once
+const zhUntilOrder = cs => cs.filter(c => !zhLearned(c)).concat(cs.filter(zhLearned));
 function zhPool(o) {
   const gc = zhGroupChars();
   let cs = o.ids ? o.ids.map(id => ZH.byId.get(id)).filter(Boolean) : ZH.cards.filter(c => zhMatches(c, o, gc));
-  if (zhRefresh(o)) cs = cs.filter(c => !zhRightToday(c));          // learned cards: only those not answered right today
-  else if (o.until) cs = cs.filter(c => !zhLearned(c) && !zhWaiting(c));   // repeat-until-learned: only cards still to do today
+  // repeat-until-learned: only cards still to do today (learned cards until answered right today)
+  if (o.until) cs = cs.filter(c => zhLearned(c) ? !zhRightToday(c) : !zhWaiting(c));
   const ord = o.order || 'weak';
-  if (ord === 'random') return shuffle(cs);
   if (ord === 'keep') return cs;
-  if (ord === 'due') { const d = c => { const x = zhDue(c); return x === null ? Infinity : x; }; return shuffle(cs).sort((a, b) => d(a) - d(b)); }
+  const fin = o.until ? zhUntilOrder : x => x;
+  if (ord === 'random') return fin(shuffle(cs));
+  if (ord === 'due') { const d = c => { const x = zhDue(c); return x === null ? Infinity : x; }; return fin(shuffle(cs).sort((a, b) => d(a) - d(b))); }
   const w = c => { const x = zhWeak(c); return x === null ? -1 : x; };
-  return shuffle(cs).sort((a, b) => w(b) - w(a));      // shuffled first, so equal scores come in a new order each time
+  return fin(shuffle(cs).sort((a, b) => w(b) - w(a)));      // shuffled first, so equal scores come in a new order each time
 }
 const zhOpts = () => ({ cats: UI.zhCats || [], filter: UI.zhFilter || 'all', weakMin: UI.zhWeakMin == null ? ZH_WEAK : UI.zhWeakMin, order: UI.zhOrder || 'weak', until: !!UI.zhUntil });
 const zhBatch = () => Math.max(1, Math.min(500, Math.round(+UI.zhBatch || 20)));
@@ -414,7 +416,7 @@ function zhStart(o, prev) {
   const ids = rest.slice(0, zhBatch()).map(c => c.id);
   ids.forEach(id => seen.add(id));
   ZS = { o, ids, i: 0, flipped: false, good: 0, again: 0, req: [], missed: [], seen: [...seen], setNo: prev ? prev.setNo + 1 : 1, pool: pool.length, wrapped,
-    until: !!o.until, total: ids.length, learnedN: 0, capN: 0, rated: [] };
+    until: !!o.until, total: ids.length, learnedN: 0, capN: 0, rated: [], wasL: ids.filter(id => zhLearned(ZH.byId.get(id))) };
   zhSave(); go('#/zh/play'); return true;
 }
 // Next set: new cards from the same run. After a round of just the missed cards, go back to the run it came from
@@ -559,7 +561,8 @@ function zhRateDo(c, l) {
     if (l >= 2) s.good++; else { s.again++; if (!s.missed.includes(c.id)) s.missed.push(c.id); }
     s.ids.splice(s.i, 1);
     const r = zhRec(c);
-    if (zhLearned(c)) s.learnedN++;         // counted in the bar at the top (no pop-up)
+    // a card learned before the set leaves on its first right answer, even if a miss on the way left it weak
+    if (zhLearned(c) || (l >= 2 && (s.wasL || []).includes(c.id))) s.learnedN++;         // counted in the bar at the top (no pop-up)
     else if (r && r.cap) s.capN++;          // right today; learned after one more right answer on another day (no pop-up)
     else s.ids.splice(Math.min(s.ids.length, s.i + 4), 0, c.id);
     s.flipped = false; return;
@@ -905,7 +908,7 @@ function zhCountLine() {
     const u = zhUntilCounts(zhOpts());
     if (zhRefresh(zhOpts())) return u.left ? `${u.left} of ${u.total} learned cards still to answer right today · ${Math.ceil(u.left / zhBatch())} set${Math.ceil(u.left / zhBatch()) === 1 ? '' : 's'} of ${zhBatch()}` : u.total ? `All ${u.total} learned cards answered right today` : 'No cards match';
     if (!u.left) return u.total ? `All ${u.total} learned${u.waiting ? ` · ${u.waiting} waiting for tomorrow` : ''}` : 'No cards match';
-    return `${u.left} of ${u.total} still to learn${u.waiting ? ` · ${u.waiting} waiting for tomorrow` : ''} · ${Math.ceil(u.left / zhBatch())} set${Math.ceil(u.left / zhBatch()) === 1 ? '' : 's'} of ${zhBatch()}`;
+    return `${u.left} of ${u.total} still to learn${u.refresh ? ` (${u.refresh} learned, to answer right once)` : ''}${u.waiting ? ` · ${u.waiting} waiting for tomorrow` : ''} · ${Math.ceil(u.left / zhBatch())} set${Math.ceil(u.left / zhBatch()) === 1 ? '' : 's'} of ${zhBatch()}`;
   }
   return `${n} card${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''}${n ? ` · ${Math.ceil(n / zhBatch())} set${Math.ceil(n / zhBatch()) === 1 ? '' : 's'} of ${zhBatch()}` : ''}`;
 }
@@ -939,7 +942,7 @@ function zhHome() {
           <label>Show ${sel('dir', [['hz', 'Characters → meaning'], ['en', 'Meaning → characters'], ['type', 'Characters → type the pinyin'], ['listen', 'Listen → meaning']], UI.zhDir || 'hz')}</label>
           <label title="Show the word inside one of its example sentences (characters → meaning only)"><input type="checkbox" data-zc="example" ${UI.zhExample ? 'checked' : ''}> Example sentence on the front</label>
           <div class="zh-exgen small muted">Examples use only words you have learned; cards without one show the word alone. <button class="btn sm ghost" data-zh="ex-copy" title="Copies a prompt; paste it into Claude Code, which writes the sentences to content/_chinese/examples">Copy prompt: examples for the next 100 cards</button></div>
-          <label title="The set keeps going round; each card leaves when its score reaches the learned line. With Cards: Learned, each learned card stays until you answer it right again"><input type="checkbox" data-zc="until" ${UI.zhUntil ? 'checked' : ''}> Repeat until learned</label>
+          <label title="The set keeps going round; each card leaves when its score reaches the learned line. Learned cards come after the others and leave on a right answer; a miss brings them back in the set and still marks them weak"><input type="checkbox" data-zc="until" ${UI.zhUntil ? 'checked' : ''}> Repeat until learned</label>
           <label title="Good +100, Easy +150, Hard +25 but counts as a miss (never learned), Don't know halves the score. Pleco scores are converted: 1200 in Pleco = the line">Learned at score <input type="number" min="50" step="50" value="${zhLearnAt()}" data-zc="learnat" class="zh-in" style="width:80px"></label>
           <label>Font ${sel('font', Object.entries(ZH_FONTS).map(([k, [t]]) => [k, t]), UI.zhFont || 'sans')} <span lang="zh" class="zh-fontprev">学习汉字</span></label>
           <label><input type="checkbox" data-zc="pinyin" ${UI.zhPinyin ? 'checked' : ''}> Pinyin on the front</label>
