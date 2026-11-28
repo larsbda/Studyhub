@@ -324,7 +324,7 @@ textarea.answer-input{min-height:96px;font-family:var(--mono);font-size:.95rem;r
 .warn-box{background:rgba(217,119,6,.12);border:1px solid var(--warn);border-radius:10px;padding:10px 14px;margin:10px 0}
 .ok-box{background:var(--good-soft);border:1px solid var(--good);border-radius:10px;padding:10px 14px;margin:10px 0}
 .empty{text-align:center;color:var(--muted);padding:40px 10px}
-.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 18px;border-radius:10px;box-shadow:var(--shadow);z-index:100;font-weight:600}
+.toast{pointer-events:none;position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 18px;border-radius:10px;box-shadow:var(--shadow);z-index:100;font-weight:600}
 mark{background:rgba(250,204,21,.4);color:var(--text);border-radius:3px;padding:0 2px}
 .result{display:block;padding:12px 14px;border-bottom:1px solid var(--border);color:inherit}
 .result:hover{background:var(--surface2);text-decoration:none}
@@ -4114,7 +4114,7 @@ function undoRate() {
   if (u.day == null) delete P.days[today()]; else P.days[today()] = u.day;
   Object.assign(session, { i: u.i, good: u.good, again: u.again, flipped: true, undo: null });
   session.queue.length = u.qlen; if (!u.req) session.requeued.delete(u.id);
-  saveP(); renderCards(); toast('Last rating undone');
+  saveP(); renderCards();   // no toast: the card coming back is the feedback
 }
 function flipCard() {
   session.flipped = !session.flipped;

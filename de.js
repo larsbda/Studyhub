@@ -356,7 +356,7 @@ function deUndo() {
   z.cards[u.id] = Object.assign(u.rec || { n: 0 }, { u: Date.now(), t: Date.now() });
   if (u.day) z.days[today()] = u.day; else delete z.days[today()];
   DS = JSON.parse(u.ds); DS.flipped = true; DS.undos = stack; DS.typed = null;
-  saveP(); deSave(); dePlay(true); toast(stack.length ? 'Rating undone · ← again for the one before' : 'Last rating undone');
+  saveP(); deSave(); dePlay(true);   // no toast: the card coming back is the feedback (a toast covered the buttons on phones)
 }
 function deRateDo(c, l) {
   const s = DS;

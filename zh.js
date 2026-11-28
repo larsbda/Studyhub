@@ -552,7 +552,7 @@ function zhUndo() {
   z.cards[u.id] = Object.assign(u.rec || { n: 0 }, { u: Date.now() });
   if (u.day) z.days[today()] = u.day; else delete z.days[today()];
   ZS = JSON.parse(u.zs); ZS.flipped = true; ZS.undo = null; ZS.undos = stack; ZS.typed = null; ZH.knownAt = 0;
-  saveP(); zhSave(); zhPlay(true); toast(stack.length ? `Rating undone · ← again for the one before` : 'Last rating undone');
+  saveP(); zhSave(); zhPlay(true);   // no toast: the card coming back is the feedback (a toast covered the buttons on phones)
 }
 function zhRateDo(c, l) {
   const s = ZS;
